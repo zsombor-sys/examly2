@@ -17,9 +17,7 @@ function safeParseJson(text: string) {
 
 export async function POST(req: Request) {
   try {
-    const user = await requireUser(req)
-    await consumeGeneration(user.id)
-
+    
     const user = await requireUser(req)
     await consumeGeneration(user.id)
 

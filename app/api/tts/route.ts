@@ -11,11 +11,10 @@ export const runtime = 'nodejs'
 
 export async function POST(req: Request) {
   try {
+    
     const user = await requireUser(req)
     await consumeGeneration(user.id)
 
-    const user = await requireUser(req)
-    await consumeGeneration(user.id)
 
     const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) {

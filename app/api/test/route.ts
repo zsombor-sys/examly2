@@ -57,8 +57,6 @@ function normalizeTest(obj: any) {
 
 export async function POST(req: Request) {
   try {
-    const user = await requireUser(req)
-    await consumeGeneration(user.id)
 
     const user = await requireUser(req)
     await consumeGeneration(user.id)

@@ -65,7 +65,8 @@ export async function POST(req: Request) {
     const prompt = String(body?.prompt ?? '').trim()
 
     if (!prompt) {
-      return NextResponse.json({ error: 'Missing prompt' }, { status: (e?.status ?? 400) })
+     return NextResponse.json({ error: 'Missing prompt' }, { status: 400 })
+
     }
 
     const apiKey = process.env.OPENAI_API_KEY

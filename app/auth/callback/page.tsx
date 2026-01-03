@@ -4,32 +4,40 @@ import { useEffect, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
-export default function AuthCallback() {
+export default function AuthCallbackPage() {
   const params = useSearchParams()
   const router = useRouter()
-  const [msg, setMsg] = useState('Signing you in…')
+  const [status, setStatus] = useState<string>('Signing you in...')
 
   useEffect(() => {
-    if (!supabase) { setStatus('Auth not configured'); return }
+    if (!supabase) {
+      setStatus('Auth not configured')
+      return
+    }
 
     const code = params.get('code')
     if (!code) {
-      setMsg('No auth code found.')
+      setStatus('Missing auth code')
       return
     }
-    supabase?.auth.exchangeCodeForSession(code)
+
+    supabase.auth
+      .exchangeCodeForSession(code)
       .then(({ error }) => {
-        if (error) throw error
-        router.replace('/plan')
+        if (error) {
+          setStatus('Authentication failed')
+          return
+        }
+        router.replace('/')
       })
-      .catch((e) => setMsg(e.message ?? 'Auth failed'))
+      .catch(() => {
+        setStatus('Authentication error')
+      })
   }, [params, router])
 
   return (
-    <div className="mx-auto max-w-2xl px-4 pt-16">
-      <div className="glass rounded-3xl p-8">
-        <div className="text-sm text-white/70">{msg}</div>
-      </div>
+    <div className="mx-auto max-w-md px-4 py-16 text-center">
+      <p className="text-sm text-white/70">{status}</p>
     </div>
   )
 }

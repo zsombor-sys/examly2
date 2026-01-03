@@ -2,18 +2,17 @@ import { supabaseAdmin } from '@/lib/supabaseServer'
 import Stripe from 'stripe'
 
 export type ProfileRow = {
-  // DB-ben van id is (NOT NULL), csak a típusaidból hiányzott
   id?: string
 
   user_id: string
   full_name: string | null
   phone: string | null
 
-  credits: number
+  credits: number | null
 
   free_window_start: string | null
   free_expires_at: string | null
-  free_used: number
+  free_used: number | null
 
   stripe_customer_id: string | null
   stripe_payment_method_id: string | null
@@ -45,6 +44,11 @@ function stripeClient() {
   return new Stripe(key, { apiVersion: '2024-06-20' })
 }
 
+function byUserOrId(q: any, userId: string) {
+  // Supabase OR filter: works for select/update/delete
+  return q.or(`user_id.eq.${userId},id.eq.${userId}`)
+}
+
 /**
  * FIX: profiles.id NOT NULL -> insertnél kötelező.
  * Biztonság: ha valahol nem user_id alapján van a rekord, fallbackolunk id-ra is.
@@ -52,7 +56,6 @@ function stripeClient() {
 export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
   const sb = supabaseAdmin()
 
-  // 1) próbáljuk user_id alapján
   const { data: byUserId, error: selErr1 } = await sb
     .from('profiles')
     .select('*')
@@ -62,7 +65,6 @@ export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
   if (selErr1) throw selErr1
   if (byUserId) return byUserId as ProfileRow
 
-  // 2) fallback: id alapján (ha régi rekordok így vannak)
   const { data: byId, error: selErr2 } = await sb
     .from('profiles')
     .select('*')
@@ -71,16 +73,23 @@ export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
 
   if (selErr2) throw selErr2
   if (byId) {
-    // ha id-s rekord van, de user_id nincs kitöltve, töltsük ki
     if (!(byId as any).user_id) {
       await sb.from('profiles').update({ user_id: userId, updated_at: nowIso() }).eq('id', userId)
+    }
+    // ha credits null volt, tegyük rendbe
+    if ((byId as any).credits == null) {
+      await sb.from('profiles').update({ credits: 0, updated_at: nowIso() }).eq('id', userId)
+      ;(byId as any).credits = 0
+    }
+    if ((byId as any).free_used == null) {
+      await sb.from('profiles').update({ free_used: 0, updated_at: nowIso() }).eq('id', userId)
+      ;(byId as any).free_used = 0
     }
     return byId as ProfileRow
   }
 
-  // 3) nincs rekord -> INSERT, és ID-t is megadjuk
   const row: Partial<ProfileRow> = {
-    id: userId,         // <<<<<< EZ volt a hiány
+    id: userId,
     user_id: userId,
 
     credits: 0,
@@ -97,12 +106,7 @@ export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
     updated_at: nowIso(),
   }
 
-  const { data: inserted, error: insErr } = await sb
-    .from('profiles')
-    .insert(row)
-    .select('*')
-    .single()
-
+  const { data: inserted, error: insErr } = await sb.from('profiles').insert(row).select('*').single()
   if (insErr) throw insErr
   return inserted as ProfileRow
 }
@@ -141,8 +145,6 @@ export async function maybeAutoRecharge(userId: string) {
   if (!p.stripe_customer_id || !p.stripe_payment_method_id) return { attempted: false, succeeded: false }
 
   const stripe = stripeClient()
-
-  // Idempotency key: userId + minute bucket. Prevent double-charging on rapid parallel calls.
   const bucket = Math.floor(Date.now() / 60000)
   const idempotencyKey = `examly_autorecharge_${userId}_${bucket}`
 
@@ -165,11 +167,10 @@ export async function maybeAutoRecharge(userId: string) {
       return { attempted: true, succeeded: false, status: pi.status }
     }
 
-    // Extra idempotency: store PI id so webhook + recharge never double-add credits.
     const shouldCredit = await markStripeEventOnce(pi.id, 'auto_recharge_payment_intent')
     if (shouldCredit) {
       const next = Number(p.credits ?? 0) + PRO_CREDITS_PER_PURCHASE
-      await sb.from('profiles').update({ credits: next, updated_at: nowIso() }).eq('user_id', userId)
+      await byUserOrId(sb.from('profiles').update({ credits: next, updated_at: nowIso() }), userId)
     }
 
     return { attempted: true, succeeded: true }
@@ -188,7 +189,6 @@ export async function consumeGeneration(userId: string) {
   const { data: rpcData, error: rpcErr } = await sb.rpc('consume_generation', { p_user_id: userId }).maybeSingle()
   if (!rpcErr && rpcData) return rpcData as any
 
-  // If RPC failed due to NO_CREDITS, try auto-recharge then retry RPC once.
   if (rpcErr && String(rpcErr.message || '').includes('NO_CREDITS')) {
     const r = await maybeAutoRecharge(userId)
     if (r.succeeded) {
@@ -216,25 +216,22 @@ export async function consumeGeneration(userId: string) {
     }
 
     if (ent.credits > 0) {
-      const { data, error } = await sb
+      // ✅ update find profile by user_id OR id
+      const q = sb
         .from('profiles')
         .update({ credits: ent.credits - 1, updated_at: nowIso() })
-        .eq('user_id', userId)
         .eq('credits', ent.credits)
-        .select('*')
-        .maybeSingle()
 
+      const { data, error } = await byUserOrId(q, userId).select('*').maybeSingle()
       if (!error && data) return { mode: 'pro', profile: data }
     } else if (ent.freeRemaining > 0) {
       const cur = Number(p.free_used ?? 0)
-      const { data, error } = await sb
+      const q = sb
         .from('profiles')
         .update({ free_used: cur + 1, updated_at: nowIso() })
-        .eq('user_id', userId)
         .eq('free_used', cur)
-        .select('*')
-        .maybeSingle()
 
+      const { data, error } = await byUserOrId(q, userId).select('*').maybeSingle()
       if (!error && data) return { mode: 'free', profile: data }
     }
   }
@@ -247,16 +244,14 @@ export async function consumeGeneration(userId: string) {
 /**
  * FREE: 48 óra, egyszer.
  * FIX: ha már volt free_window_start valaha -> tiltás.
- * FIX: biztosítjuk, hogy profile rekord létezik és id nem null.
+ * FIX: credits ne maradjon NULL (0-ra beírjuk).
  */
 export async function activateFree(userId: string, fullName: string, phone: string) {
   const sb = supabaseAdmin()
   const p = await getOrCreateProfile(userId)
 
-  // ha épp aktív, ne írjuk felül
   if (p.free_expires_at && new Date(p.free_expires_at).getTime() > Date.now()) return p
 
-  // egyszer használható: ha már valaha elindult az ablak, akkor kész, vége
   if (p.free_window_start) {
     const err: any = new Error('Free plan already used')
     err.status = 403
@@ -264,7 +259,7 @@ export async function activateFree(userId: string, fullName: string, phone: stri
     throw err
   }
 
-  const { data, error } = await sb
+  const q = sb
     .from('profiles')
     .update({
       full_name: fullName,
@@ -272,12 +267,12 @@ export async function activateFree(userId: string, fullName: string, phone: stri
       free_window_start: nowIso(),
       free_expires_at: addHoursISO(FREE_WINDOW_HOURS),
       free_used: 0,
+      // ✅ ez a kulcs: ha eddig null volt, legyen 0
+      credits: Number(p.credits ?? 0),
       updated_at: nowIso(),
     })
-    .eq('user_id', userId)
-    .select('*')
-    .single()
 
+  const { data, error } = await byUserOrId(q, userId).select('*').single()
   if (error) throw error
   return data as ProfileRow
 }
@@ -287,12 +282,8 @@ export async function addProCredits(userId: string, amount = PRO_CREDITS_PER_PUR
   const p = await getOrCreateProfile(userId)
   const next = Number(p.credits ?? 0) + amount
 
-  const { data, error } = await sb
-    .from('profiles')
-    .update({ credits: next, updated_at: nowIso() })
-    .eq('user_id', userId)
-    .select('*')
-    .single()
+  const q = sb.from('profiles').update({ credits: next, updated_at: nowIso() })
+  const { data, error } = await byUserOrId(q, userId).select('*').single()
 
   if (error) throw error
   return data as ProfileRow

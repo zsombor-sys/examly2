@@ -1,25 +1,29 @@
 import { NextResponse } from 'next/server'
-import { z } from 'zod'
 import { requireUser } from '@/lib/authServer'
 import { activateFree } from '@/lib/creditsServer'
 
 export const runtime = 'nodejs'
 
-const Schema = z.object({
-  fullName: z.string().trim().min(2).max(120),
-  phone: z.string().trim().min(6).max(40),
-  email: z.string().trim().email().optional(),
-})
-
 export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
-    const body = await req.json().catch(() => ({}))
-    const { fullName, phone } = Schema.parse(body)
+
+    const body = await req.json().catch(() => ({} as any))
+    const fullName = String(body?.fullName ?? '').trim()
+    const phone = String(body?.phone ?? '').trim()
+
+    if (fullName.length < 2) {
+      return NextResponse.json({ error: 'Full name is required' }, { status: 400 })
+    }
+    if (phone.length < 6) {
+      return NextResponse.json({ error: 'Phone number is required' }, { status: 400 })
+    }
+
     const profile = await activateFree(user.id, fullName, phone)
-    return NextResponse.json({ profile })
+
+    return NextResponse.json({ ok: true, profile })
   } catch (e: any) {
-    const status = e?.status ?? 400
+    const status = e?.status ?? 500
     return NextResponse.json({ error: e?.message ?? 'Error' }, { status })
   }
 }

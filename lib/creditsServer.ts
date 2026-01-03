@@ -2,16 +2,23 @@ import { supabaseAdmin } from '@/lib/supabaseServer'
 import Stripe from 'stripe'
 
 export type ProfileRow = {
+  // DB-ben van id is (NOT NULL), csak a típusaidból hiányzott
+  id?: string
+
   user_id: string
   full_name: string | null
   phone: string | null
+
   credits: number
+
   free_window_start: string | null
   free_expires_at: string | null
   free_used: number
+
   stripe_customer_id: string | null
   stripe_payment_method_id: string | null
   auto_recharge: boolean
+
   created_at?: string
   updated_at?: string
 }
@@ -38,32 +45,64 @@ function stripeClient() {
   return new Stripe(key, { apiVersion: '2024-06-20' })
 }
 
+/**
+ * FIX: profiles.id NOT NULL -> insertnél kötelező.
+ * Biztonság: ha valahol nem user_id alapján van a rekord, fallbackolunk id-ra is.
+ */
 export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
   const sb = supabaseAdmin()
 
-  const { data: existing, error: selErr } = await sb
+  // 1) próbáljuk user_id alapján
+  const { data: byUserId, error: selErr1 } = await sb
     .from('profiles')
     .select('*')
     .eq('user_id', userId)
     .maybeSingle()
 
-  if (selErr) throw selErr
-  if (existing) return existing as ProfileRow
+  if (selErr1) throw selErr1
+  if (byUserId) return byUserId as ProfileRow
 
+  // 2) fallback: id alapján (ha régi rekordok így vannak)
+  const { data: byId, error: selErr2 } = await sb
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (selErr2) throw selErr2
+  if (byId) {
+    // ha id-s rekord van, de user_id nincs kitöltve, töltsük ki
+    if (!(byId as any).user_id) {
+      await sb.from('profiles').update({ user_id: userId, updated_at: nowIso() }).eq('id', userId)
+    }
+    return byId as ProfileRow
+  }
+
+  // 3) nincs rekord -> INSERT, és ID-t is megadjuk
   const row: Partial<ProfileRow> = {
+    id: userId,         // <<<<<< EZ volt a hiány
     user_id: userId,
+
     credits: 0,
     free_used: 0,
     free_window_start: null,
     free_expires_at: null,
+
     full_name: null,
     phone: null,
+
     stripe_customer_id: null,
     stripe_payment_method_id: null,
     auto_recharge: false,
+    updated_at: nowIso(),
   }
 
-  const { data: inserted, error: insErr } = await sb.from('profiles').insert(row).select('*').single()
+  const { data: inserted, error: insErr } = await sb
+    .from('profiles')
+    .insert(row)
+    .select('*')
+    .single()
+
   if (insErr) throw insErr
   return inserted as ProfileRow
 }
@@ -92,9 +131,7 @@ async function markStripeEventOnce(eventId: string, type: string) {
 }
 
 /**
- * Best-effort auto-recharge:
- * If user has auto_recharge enabled + saved payment method, we try an off-session payment.
- * Note: Some cards/banks require customer action (SCA). In that case we can't fully automate.
+ * Best-effort auto-recharge.
  */
 export async function maybeAutoRecharge(userId: string) {
   const sb = supabaseAdmin()
@@ -137,16 +174,12 @@ export async function maybeAutoRecharge(userId: string) {
 
     return { attempted: true, succeeded: true }
   } catch (e: any) {
-    // Stripe error like authentication_required can happen with SCA.
     return { attempted: true, succeeded: false, error: e?.code ?? e?.message }
   }
 }
 
 /**
  * Consume 1 generation.
- * Priority: paid credits -> free window.
- *
- * If no credits and no free, we attempt auto-recharge (best effort), then retry.
  */
 export async function consumeGeneration(userId: string) {
   const sb = supabaseAdmin()
@@ -171,10 +204,7 @@ export async function consumeGeneration(userId: string) {
 
     if (!ent.ok) {
       const recharge = await maybeAutoRecharge(userId)
-      if (recharge.succeeded) {
-        // retry this attempt after recharge
-        continue
-      }
+      if (recharge.succeeded) continue
 
       const err: any = new Error('No credits left')
       err.status = 402
@@ -214,14 +244,19 @@ export async function consumeGeneration(userId: string) {
   throw err
 }
 
+/**
+ * FREE: 48 óra, egyszer.
+ * FIX: ha már volt free_window_start valaha -> tiltás.
+ * FIX: biztosítjuk, hogy profile rekord létezik és id nem null.
+ */
 export async function activateFree(userId: string, fullName: string, phone: string) {
   const sb = supabaseAdmin()
   const p = await getOrCreateProfile(userId)
 
-  // If currently active, keep it.
+  // ha épp aktív, ne írjuk felül
   if (p.free_expires_at && new Date(p.free_expires_at).getTime() > Date.now()) return p
 
-  // FREE is only once per account. If the window already started before (even if expired), block.
+  // egyszer használható: ha már valaha elindult az ablak, akkor kész, vége
   if (p.free_window_start) {
     const err: any = new Error('Free plan already used')
     err.status = 403

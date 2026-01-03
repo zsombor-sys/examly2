@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Textarea } from '@/components/ui'
 import FlipCard from '@/components/FlipCard'
-import { FileUp, Loader2, RotateCcw, ArrowLeftRight } from 'lucide-react'
+import { FileUp, Loader2, RotateCcw, ArrowLeftRight, Play } from 'lucide-react'
 import AuthGate from '@/components/AuthGate'
 import { authedFetch } from '@/lib/authClient'
 import { supabase } from '@/lib/supabaseClient'
@@ -37,7 +37,12 @@ function nowId() {
 
 function fmtDate(ts: number) {
   const d = new Date(ts)
-  return d.toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function parseWords(raw: string) {
@@ -46,6 +51,7 @@ function parseWords(raw: string) {
     .split(/\n|,|;|\t/)
     .map((s) => s.trim())
     .filter(Boolean)
+
   // de-dupe while preserving order
   const seen = new Set<string>()
   const out: string[] = []
@@ -92,7 +98,6 @@ function VocabPageInner() {
   const totalCards = data?.items?.length ?? 0
 
   useEffect(() => {
-    // Prefer Supabase history if the user is signed in.
     ;(async () => {
       try {
         const userRes = await supabase?.auth.getUser()
@@ -116,7 +121,11 @@ function VocabPageInner() {
                 title: 'Saved set',
                 language: `${r.from_lang}→${r.to_lang}`,
                 items: Array.isArray(r.cards)
-                  ? r.cards.map((c: any) => ({ term: c.term, translation: c.translation, example: c.example }))
+                  ? r.cards.map((c: any) => ({
+                      term: c.term,
+                      translation: c.translation,
+                      example: c.example,
+                    }))
                   : [],
               },
             }))
@@ -134,9 +143,9 @@ function VocabPageInner() {
         }
 
         // Fallback: localStorage history
-        const raw = localStorage.getItem(HISTORY_KEY)
-        if (!raw) return
-        const parsed = JSON.parse(raw)
+        const rawLs = localStorage.getItem(HISTORY_KEY)
+        if (!rawLs) return
+        const parsed = JSON.parse(rawLs)
         if (Array.isArray(parsed)) {
           setHistory(parsed)
           if (parsed[0]?.id) {
@@ -155,7 +164,9 @@ function VocabPageInner() {
 
   function saveHistory(next: SavedSet[]) {
     setHistory(next)
-    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next.slice(0, 40))) } catch {}
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(next.slice(0, 40)))
+    } catch {}
   }
 
   function loadSaved(id: string) {
@@ -172,13 +183,12 @@ function VocabPageInner() {
   function clearAll() {
     setHistory([])
     setActiveId(null)
-    try { localStorage.removeItem(HISTORY_KEY) } catch {}
+    try {
+      localStorage.removeItem(HISTORY_KEY)
+    } catch {}
   }
 
   const words = useMemo(() => parseWords(raw), [raw])
-
-  const sourceLabel = useMemo(() => LANGS.find((l) => l.code === sourceLang)?.label ?? sourceLang, [sourceLang])
-  const targetLabel = useMemo(() => LANGS.find((l) => l.code === targetLang)?.label ?? targetLang, [targetLang])
 
   function swapDirection() {
     // Swap the translation direction (e.g. EN → HU becomes HU → EN)
@@ -188,18 +198,17 @@ function VocabPageInner() {
     setSwappedView((v) => !v)
   }
 
+  // ✅ FIX: itt volt a fájl szétverve (árva return + rossz zárójel + isAdmin)
   async function generate() {
     setError(null)
-      return
-    }
 
-    // Free plan hard-cap: 70 words (client side). Admin override: unlimited.
-    const trimmed = isAdmin ? words : words.slice(0, 70)
+    // semmi input
+    if ((words.length === 0 && files.length === 0) || loading) return
 
     setLoading(true)
     try {
       const fd = new FormData()
-      fd.append('words', trimmed.join('\n'))
+      fd.append('words', words.join('\n'))
       fd.append('sourceLang', sourceLang)
       fd.append('targetLang', targetLang)
       for (const f of files) fd.append('files', f, f.name)
@@ -207,6 +216,7 @@ function VocabPageInner() {
       const res = await authedFetch('/api/vocab', { method: 'POST', body: fd })
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error ?? 'Request failed')
+
       setData(json)
 
       // If signed in, persist to Supabase so it follows the account (not the browser).
@@ -226,6 +236,7 @@ function VocabPageInner() {
             .insert({ user_id: user.id, from_lang: sourceLang, to_lang: targetLang, cards })
             .select('id, created_at')
             .single()
+
           if (!error && row?.id) {
             persistedId = row.id
             persistedCreatedAt = row.created_at ? new Date(row.created_at).getTime() : Date.now()
@@ -247,9 +258,21 @@ function VocabPageInner() {
 
       const next = [item, ...history].slice(0, 40)
       setActiveId(item.id)
-      // Keep local history for instant UX even when we also saved to DB.
       saveHistory(next)
       setTab('cards')
+
+      // reset learn session state (optional UX)
+      setLearnStarted(false)
+      setFinished(false)
+      setQueue([])
+      setCurrent(null)
+      setReveal(false)
+      setAnswer('')
+      setCorrectCount(0)
+      setWrongCount(0)
+      setWrongTerms({})
+      setStreak(0)
+      setSessionStart(null)
     } catch (e: any) {
       setError(e?.message ?? 'Error')
     } finally {
@@ -262,6 +285,12 @@ function VocabPageInner() {
     setFiles([])
     setData(null)
     setError(null)
+    setLearnStarted(false)
+    setFinished(false)
+    setQueue([])
+    setCurrent(null)
+    setReveal(false)
+    setAnswer('')
   }
 
   function normalizeGuess(s: string) {
@@ -273,7 +302,6 @@ function VocabPageInner() {
   }
 
   function splitAcceptedAnswers(s: string) {
-    // allow multiple answers separated by comma, semicolon, slash, or " / "
     return s
       .split(/[,;/]| \/\s?|\s\/\s/g)
       .map((x) => normalizeGuess(x))
@@ -282,7 +310,6 @@ function VocabPageInner() {
 
   function buildInitialQueue(n: number) {
     const arr = Array.from({ length: n }, (_, i) => i)
-    // light shuffle to avoid always same order
     for (let i = arr.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1))
       ;[arr[i], arr[j]] = [arr[j], arr[i]]
@@ -326,7 +353,7 @@ function VocabPageInner() {
 
   function handleCorrect() {
     if (!data || current == null) return
-    const nextQueue = queue.slice(1) // drop current
+    const nextQueue = queue.slice(1)
     setCorrectCount((x) => x + 1)
     setStreak((s) => s + 1)
     setPendingRequeue(false)
@@ -362,11 +389,8 @@ function VocabPageInner() {
     const guess = normalizeGuess(answer)
     const accepted = splitAcceptedAnswers(card.translation)
     const ok = accepted.includes(guess)
-    if (ok) {
-      handleCorrect()
-    } else {
-      handleWrong(true)
-    }
+    if (ok) handleCorrect()
+    else handleWrong(true)
   }
 
   function makeChoices(correct: string, allTranslations: string[]) {
@@ -376,7 +400,6 @@ function VocabPageInner() {
       const pick = pool.splice(Math.floor(Math.random() * pool.length), 1)[0]
       choices.push(pick)
     }
-    // shuffle
     for (let i = choices.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1))
       ;[choices[i], choices[j]] = [choices[j], choices[i]]
@@ -388,14 +411,9 @@ function VocabPageInner() {
     if (!data || current == null) return
     const card = data.items[current]
     const ok = normalizeGuess(chosen) === normalizeGuess(card.translation)
-    if (ok) {
-      handleCorrect()
-    } else {
-      handleWrong(true)
-    }
+    if (ok) handleCorrect()
+    else handleWrong(true)
   }
-
-
 
   useEffect(() => {
     if (!learnStarted || finished || !sessionStart) return
@@ -416,25 +434,20 @@ function VocabPageInner() {
     return `${m}:${String(s).padStart(2, '0')}`
   }
 
-
   return (
     <div className="mx-auto max-w-6xl px-4 py-12">
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Vocab</h1>
           <p className="mt-2 text-white/70 max-w-[70ch]">
-            Paste a word list or upload a photo of your vocab sheet. Examly turns it into flashcards you can actually use (any language pair).
+            Paste a word list or upload a photo of your vocab sheet. Examly turns it into flashcards you can actually
+            use (any language pair).
           </p>
-          <p className="mt-1 text-xs text-white/50">
-            Free: 1 set / 48h (max 70 words). Pro: unlimited.
-          </p>
+          <p className="mt-1 text-xs text-white/50">Free: 1 set / 48h. Pro: unlimited.</p>
         </div>
+
         <div className="-mx-1 flex gap-2 overflow-x-auto px-1 no-scrollbar">
-          <Button
-            className="shrink-0"
-            variant={tab === 'cards' ? 'primary' : 'ghost'}
-            onClick={() => setTab('cards')}
-          >
+          <Button className="shrink-0" variant={tab === 'cards' ? 'primary' : 'ghost'} onClick={() => setTab('cards')}>
             Cards
           </Button>
           <Button
@@ -444,14 +457,12 @@ function VocabPageInner() {
           >
             History
           </Button>
-          <Button
-            className="shrink-0"
-            variant={tab === 'learn' ? 'primary' : 'ghost'}
-            onClick={() => setTab('learn')}
-          >
+          <Button className="shrink-0" variant={tab === 'learn' ? 'primary' : 'ghost'} onClick={() => setTab('learn')}>
             Learn
           </Button>
-          <Button className="shrink-0" variant="ghost" onClick={reset}><RotateCcw size={16} /> Reset</Button>
+          <Button className="shrink-0" variant="ghost" onClick={reset}>
+            <RotateCcw size={16} /> Reset
+          </Button>
           <Button className="shrink-0" onClick={generate} disabled={loading}>
             {loading ? <Loader2 className="animate-spin" size={16} /> : <FileUp size={16} />}
             Generate set
@@ -462,6 +473,7 @@ function VocabPageInner() {
       <div className="mt-8 grid gap-6 md:grid-cols-2">
         <Card>
           <div className="text-xs uppercase tracking-[0.18em] text-white/55">Input</div>
+
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <label className="text-xs text-white/60">From</label>
             <select
@@ -470,7 +482,9 @@ function VocabPageInner() {
               className="rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white/80"
             >
               {LANGS.map((l) => (
-                <option key={l.code} value={l.code}>{l.label}</option>
+                <option key={l.code} value={l.code}>
+                  {l.label}
+                </option>
               ))}
             </select>
 
@@ -485,16 +499,20 @@ function VocabPageInner() {
               className="rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white/80"
             >
               {LANGS.map((l) => (
-                <option key={l.code} value={l.code}>{l.label}</option>
+                <option key={l.code} value={l.code}>
+                  {l.label}
+                </option>
               ))}
             </select>
           </div>
+
           <Textarea
             className="mt-3 min-h-[240px]"
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
-            placeholder={"Paste words (one per line)\n\nExample:\napple - alma\ndog - kutya\nbook - könyv"}
+            placeholder={'Paste words (one per line)\n\nExample:\napple - alma\ndog - kutya\nbook - könyv'}
           />
+
           <div className="mt-4 flex items-center justify-between">
             <div className="text-xs text-white/55">{words.length} words detected</div>
             <label className="text-xs text-white/70 cursor-pointer inline-flex items-center gap-2">
@@ -508,11 +526,8 @@ function VocabPageInner() {
               <span className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">Upload photo</span>
             </label>
           </div>
-          {files.length > 0 && (
-            <div className="mt-2 text-xs text-white/60">
-              {files.length} image(s) attached
-            </div>
-          )}
+
+          {files.length > 0 && <div className="mt-2 text-xs text-white/60">{files.length} image(s) attached</div>}
           {error && <p className="mt-4 text-sm text-red-400">{error}</p>}
         </Card>
 
@@ -521,8 +536,11 @@ function VocabPageInner() {
             <>
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-[0.18em] text-white/55">History</div>
-                <Button variant="ghost" onClick={clearAll} className="gap-2">Clear</Button>
+                <Button variant="ghost" onClick={clearAll} className="gap-2">
+                  Clear
+                </Button>
               </div>
+
               {history.length === 0 ? (
                 <p className="mt-3 text-sm text-white/60">No saved sets yet. Generate one and it will appear here.</p>
               ) : (
@@ -540,8 +558,8 @@ function VocabPageInner() {
                     >
                       <div className="text-sm font-medium truncate">{h.data?.title || 'Vocab set'}</div>
                       <div className="mt-1 text-xs text-white/55">
-                        {LANGS.find((l) => l.code === h.sourceLang)?.label ?? h.sourceLang} → {LANGS.find((l) => l.code === h.targetLang)?.label ?? h.targetLang}
-                        {' '}• {fmtDate(h.createdAt)}
+                        {LANGS.find((l) => l.code === h.sourceLang)?.label ?? h.sourceLang} →{' '}
+                        {LANGS.find((l) => l.code === h.targetLang)?.label ?? h.targetLang} • {fmtDate(h.createdAt)}
                       </div>
                     </button>
                   ))}
@@ -553,7 +571,9 @@ function VocabPageInner() {
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-[0.18em] text-white/55">Learn</div>
                 <div className="flex items-center gap-2">
-                  <Button variant={learnMode === 'type' ? 'primary' : 'ghost'} onClick={() => setLearnMode('type')}>Type</Button>
+                  <Button variant={learnMode === 'type' ? 'primary' : 'ghost'} onClick={() => setLearnMode('type')}>
+                    Type
+                  </Button>
                   <Button
                     variant={learnMode === 'mcq' ? 'primary' : 'ghost'}
                     onClick={() => setLearnMode('mcq')}
@@ -569,28 +589,47 @@ function VocabPageInner() {
               </div>
 
               {!data?.items?.length ? (
-                <p className="mt-3 text-sm text-white/60">Generate a set first, then come back here to learn it quiz-style.</p>
+                <p className="mt-3 text-sm text-white/60">
+                  Generate a set first, then come back here to learn it quiz-style.
+                </p>
               ) : finished ? (
                 <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-lg font-semibold">Session summary</div>
-                    <div className="text-sm text-white/70">Time: <span className="font-medium text-white">{formatTime(elapsedMs)}</span></div>
+                    <div className="text-sm text-white/70">
+                      Time: <span className="font-medium text-white">{formatTime(elapsedMs)}</span>
+                    </div>
                   </div>
+
                   <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="text-white/60">Correct</div><div className="mt-1 text-2xl font-semibold">{correctCount}</div></div>
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="text-white/60">Wrong</div><div className="mt-1 text-2xl font-semibold">{wrongCount}</div></div>
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="text-white/60">Total</div><div className="mt-1 text-2xl font-semibold">{totalCards}</div></div>
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                      <div className="text-white/60">Correct</div>
+                      <div className="mt-1 text-2xl font-semibold">{correctCount}</div>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                      <div className="text-white/60">Wrong</div>
+                      <div className="mt-1 text-2xl font-semibold">{wrongCount}</div>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                      <div className="text-white/60">Total</div>
+                      <div className="mt-1 text-2xl font-semibold">{totalCards}</div>
+                    </div>
                   </div>
 
                   {Object.keys(wrongTerms).length > 0 ? (
                     <>
-                      <div className="mt-4 text-sm text-white/70">Review these again (you missed them at least once):</div>
+                      <div className="mt-4 text-sm text-white/70">
+                        Review these again (you missed them at least once):
+                      </div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {Object.entries(wrongTerms)
                           .sort((a, b) => b[1] - a[1])
                           .slice(0, 18)
                           .map(([term, c]) => (
-                            <span key={term} className="rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs text-white/80">
+                            <span
+                              key={term}
+                              className="rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs text-white/80"
+                            >
                               {term} <span className="text-white/50">×{c}</span>
                             </span>
                           ))}
@@ -602,11 +641,16 @@ function VocabPageInner() {
 
                   <div className="mt-5 flex gap-2">
                     <Button onClick={startLearnSession}>Learn again</Button>
-                    <Button variant="ghost" onClick={() => setTab('cards')}>Back to cards</Button>
+                    <Button variant="ghost" onClick={() => setTab('cards')}>
+                      Back to cards
+                    </Button>
                   </div>
                 </div>
               ) : !learnStarted ? (
-                <p className="mt-3 text-sm text-white/60">Press <span className="text-white">Start</span> to begin. Wrong answers will come back later (Quizlet-style).</p>
+                <p className="mt-3 text-sm text-white/60">
+                  Press <span className="text-white">Start</span> to begin. Wrong answers will come back later
+                  (Quizlet-style).
+                </p>
               ) : (
                 <>
                   <div className="mt-3 flex items-center justify-between text-sm text-white/70">
@@ -615,7 +659,9 @@ function VocabPageInner() {
                       {wrongCount > 0 ? <span className="text-white/50"> · {wrongCount} wrong</span> : null}
                       {streak > 1 ? <span className="text-white/50"> · streak {streak}</span> : null}
                     </div>
-                    <div>Time: <span className="text-white font-medium">{formatTime(elapsedMs)}</span></div>
+                    <div>
+                      Time: <span className="text-white font-medium">{formatTime(elapsedMs)}</span>
+                    </div>
                   </div>
 
                   {(() => {
@@ -625,6 +671,7 @@ function VocabPageInner() {
                     const choices = learnMode === 'mcq' ? makeChoices(card.translation, allTranslations) : []
                     const fromLabel = LANGS.find((l) => l.code === sourceLang)?.label ?? sourceLang
                     const toLabel = LANGS.find((l) => l.code === targetLang)?.label ?? targetLang
+
                     return (
                       <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
                         <div className="text-xs uppercase tracking-[0.18em] text-white/55">{fromLabel}</div>
@@ -637,7 +684,9 @@ function VocabPageInner() {
                             {card.example ? <div className="mt-2 text-sm text-white/70">{card.example}</div> : null}
                             <div className="mt-3 flex gap-2">
                               <Button onClick={continueAfterReveal}>Next</Button>
-                              <Button variant="ghost" onClick={() => setReveal(false)}>Hide answer</Button>
+                              <Button variant="ghost" onClick={() => setReveal(false)}>
+                                Hide answer
+                              </Button>
                             </div>
                           </div>
                         ) : learnMode === 'mcq' && choices.length >= 2 ? (
@@ -652,22 +701,32 @@ function VocabPageInner() {
                               </button>
                             ))}
                             <div className="mt-2 flex gap-2">
-                              <Button variant="ghost" onClick={() => handleWrong(true)}>Skip</Button>
+                              <Button variant="ghost" onClick={() => handleWrong(true)}>
+                                Skip
+                              </Button>
                             </div>
                           </div>
                         ) : (
                           <div className="mt-5">
-                            <div className="text-sm text-white/70">Type the translation, then press <span className="text-white">Check</span>.</div>
+                            <div className="text-sm text-white/70">
+                              Type the translation, then press <span className="text-white">Check</span>.
+                            </div>
                             <input
                               value={answer}
                               onChange={(e) => setAnswer(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === 'Enter') checkTypedAnswer() }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') checkTypedAnswer()
+                              }}
                               placeholder={`Type in ${toLabel}...`}
                               className="mt-3 w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none focus:border-white/25"
                             />
                             <div className="mt-3 flex gap-2">
-                              <Button onClick={checkTypedAnswer} disabled={!answer.trim()}>Check</Button>
-                              <Button variant="ghost" onClick={() => handleWrong(true)}>Skip</Button>
+                              <Button onClick={checkTypedAnswer} disabled={!answer.trim()}>
+                                Check
+                              </Button>
+                              <Button variant="ghost" onClick={() => handleWrong(true)}>
+                                Skip
+                              </Button>
                             </div>
                           </div>
                         )}
@@ -680,6 +739,7 @@ function VocabPageInner() {
           ) : (
             <>
               <div className="text-xs uppercase tracking-[0.18em] text-white/55">Flashcards</div>
+
               {!data ? (
                 <p className="mt-3 text-sm text-white/60">Generate a set to see your cards here.</p>
               ) : (
@@ -689,8 +749,16 @@ function VocabPageInner() {
                       <FlipCard
                         front={swappedView ? it.translation : it.term}
                         back={swappedView ? it.term : it.translation}
-                        hintFront={swappedView ? LANGS.find((l) => l.code === targetLang)?.label : LANGS.find((l) => l.code === sourceLang)?.label}
-                        hintBack={swappedView ? LANGS.find((l) => l.code === sourceLang)?.label : LANGS.find((l) => l.code === targetLang)?.label}
+                        hintFront={
+                          swappedView
+                            ? LANGS.find((l) => l.code === targetLang)?.label
+                            : LANGS.find((l) => l.code === sourceLang)?.label
+                        }
+                        hintBack={
+                          swappedView
+                            ? LANGS.find((l) => l.code === sourceLang)?.label
+                            : LANGS.find((l) => l.code === targetLang)?.label
+                        }
                       />
                       {it.example ? <div className="mt-2 text-xs text-white/55">{it.example}</div> : null}
                     </div>
@@ -705,7 +773,6 @@ function VocabPageInner() {
   )
 }
 
-
 export default function VocabPage() {
   return (
     <AuthGate>
@@ -713,4 +780,3 @@ export default function VocabPage() {
     </AuthGate>
   )
 }
-

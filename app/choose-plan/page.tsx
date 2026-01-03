@@ -8,12 +8,27 @@ import { authedFetch } from '@/lib/authClient'
 import { Button, Card, Input } from '@/components/ui'
 import { ArrowRight, ShieldCheck, Zap } from 'lucide-react'
 
+type MeResponse = {
+  user?: { id: string; email?: string }
+  profile?: any
+  entitlement?: {
+    ok: boolean
+    credits: number
+    freeActive: boolean
+    freeRemaining: number
+  }
+}
+
 export default function ChoosePlanPage() {
   return (
     <AuthGate requireEntitlement={false}>
       <Inner />
     </AuthGate>
   )
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms))
 }
 
 function Inner() {
@@ -31,6 +46,27 @@ function Inner() {
     })
   }, [])
 
+  async function refreshMe(): Promise<MeResponse | null> {
+    try {
+      const res = await authedFetch('/api/me', { method: 'GET' })
+      if (!res.ok) return null
+      return (await res.json()) as MeResponse
+    } catch {
+      return null
+    }
+  }
+
+  async function waitForEntitlement(maxTries = 6): Promise<boolean> {
+    // small backoff: 0ms, 250ms, 500ms, 750ms, 1000ms...
+    for (let i = 0; i < maxTries; i++) {
+      const me = await refreshMe()
+      const ent = (me as any)?.entitlement
+      if (ent?.ok) return true
+      await sleep(250 + i * 250)
+    }
+    return false
+  }
+
   async function activateFree() {
     setMsg(null)
     setLoading(true)
@@ -40,8 +76,15 @@ function Inner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, fullName, phone }),
       })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json?.error ?? 'Error')
+
+      // ✅ IMPORTANT: wait until the server actually sees the new entitlement
+      const ok = await waitForEntitlement()
+      if (!ok) {
+        throw new Error('Free trial activated, but entitlement did not refresh yet. Please refresh the page.')
+      }
+
       router.replace('/plan')
     } catch (e: any) {
       setMsg(e?.message ?? 'Error')
@@ -59,7 +102,7 @@ function Inner() {
       </p>
 
       <div className="mt-10 grid gap-6 md:grid-cols-2">
-        {/* PRO FIRST (more prominent) */}
+        {/* PRO FIRST */}
         <Card className="relative overflow-hidden">
           <div className="flex items-center gap-2 text-white/90">
             <Zap size={18} />
@@ -70,22 +113,20 @@ function Inner() {
           <div className="mt-6 rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm text-white/70">
             <ul className="list-disc pl-5 space-y-1">
               <li>Use credits on any feature (Plan, Practice, Vocab, Ask, Audio)</li>
-              <li>
-                When credits run out, Examly will try to auto-top-up (charge 3500 Ft again) using your saved payment method.
-              </li>
+              <li>When credits run out, Examly will try to auto-top-up (charge 3500 Ft again) using your saved payment method.</li>
               <li>If your bank requires extra confirmation, we will ask you to complete payment on the Billing page</li>
               <li>Credits are stored server-side (can’t be edited from the browser)</li>
             </ul>
           </div>
 
-          <Button className="mt-6 w-full gap-2" onClick={() => router.push('/billing')}> 
+          <Button className="mt-6 w-full gap-2" onClick={() => router.push('/billing')}>
             Continue to payment <ArrowRight size={16} />
           </Button>
 
           {msg && <p className="mt-3 text-sm text-red-400">{msg}</p>}
         </Card>
 
-        {/* FREE (de-emphasized) */}
+        {/* FREE */}
         <Card className="opacity-[0.85]">
           <div className="flex items-center gap-2 text-white/80">
             <ShieldCheck size={18} />
@@ -101,11 +142,11 @@ function Inner() {
 
           <Button
             className="mt-6 w-full gap-2"
-           variant="ghost"
+            variant="ghost"
             onClick={activateFree}
             disabled={loading || fullName.trim().length < 2 || phone.trim().length < 6}
           >
-            Activate free trial <ArrowRight size={16} />
+            {loading ? 'Activating...' : 'Activate free trial'} <ArrowRight size={16} />
           </Button>
 
           <p className="mt-3 text-xs text-white/55">

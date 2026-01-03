@@ -5,17 +5,22 @@ import { getOrCreateProfile } from '@/lib/creditsServer'
 
 export const runtime = 'nodejs'
 
-function isFreeActive(p: any) {
-  const candidates = [
-    p?.free_window_end,
-    p?.free_expires_at,
-  ].filter(Boolean)
+function pickFreeExpiry(p: any): string | null {
+  // támogat többféle oszlopnevet, mert nálad kavart a séma
+  const v =
+    p?.free_window_end ??
+    p?.free_expires_at ??
+    p?.free_window_start_end ?? // just in case, harmless
+    null
 
-  for (const v of candidates) {
-    const t = new Date(v).getTime()
-    if (Number.isFinite(t) && t > Date.now()) return true
-  }
-  return false
+  return v ? String(v) : null
+}
+
+function isFreeActive(p: any): boolean {
+  const exp = pickFreeExpiry(p)
+  if (!exp) return false
+  const t = new Date(exp).getTime()
+  return Number.isFinite(t) && t > Date.now()
 }
 
 export async function GET(req: Request) {
@@ -23,21 +28,35 @@ export async function GET(req: Request) {
     const user = await requireUser(req)
     const sb = supabaseAdmin()
 
-    // ensure profile exists (also fixes null-id creation issues)
+    // Ensure profile exists (prevents null id insert issues)
     let profile = await getOrCreateProfile(user.id)
 
-    // reload profile robustly (in case triggers updated)
-    const { data: p1 } = await sb.from('profiles').select('*').eq('user_id', user.id).maybeSingle()
-    if (p1) profile = p1 as any
-    else {
-      const { data: p2 } = await sb.from('profiles').select('*').eq('id', user.id).maybeSingle()
+    // Reload robustly (user_id first, then id fallback)
+    const { data: p1, error: e1 } = await sb
+      .from('profiles')
+      .select('*')
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    if (e1) throw e1
+
+    if (p1) {
+      profile = p1 as any
+    } else {
+      const { data: p2, error: e2 } = await sb
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .maybeSingle()
+
+      if (e2) throw e2
       if (p2) profile = p2 as any
     }
 
-    const credits = Number(profile?.credits ?? 0)
-    const freeActive = isFreeActive(profile)
+    const p: any = profile
 
-    // if freeActive but credits 0, that is still entitlement ok (free uses free_used internally)
+    const credits = Number(p?.credits ?? 0)
+    const freeActive = isFreeActive(p)
     const entitlementOk = credits > 0 || freeActive
 
     return NextResponse.json({
@@ -47,8 +66,8 @@ export async function GET(req: Request) {
         ok: entitlementOk,
         credits,
         freeActive,
-        freeUsed: Number(profile?.free_used ?? 0),
-        freeExpiresAt: profile?.free_window_end ?? profile?.free_expires_at ?? null,
+        freeUsed: Number(p?.free_used ?? 0),
+        freeExpiresAt: pickFreeExpiry(p),
       },
     })
   } catch (e: any) {

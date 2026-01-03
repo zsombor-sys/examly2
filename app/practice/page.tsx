@@ -1,7 +1,6 @@
 'use client'
 
-import { useState } from 'react'
-import Card from '@/components/CardsPull'
+import React, { useState } from 'react'
 import MarkdownMath from '@/components/MarkdownMath'
 import { Loader2, Play } from 'lucide-react'
 import { authedFetch } from '@/lib/authClient'
@@ -18,6 +17,20 @@ type TestData = {
   language: string
   duration_min: number
   questions: Question[]
+}
+
+function Panel({
+  className = '',
+  children,
+}: {
+  className?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className={'rounded-3xl border border-white/10 bg-white/5 ' + className}>
+      {children}
+    </div>
+  )
 }
 
 export default function PracticePage() {
@@ -39,17 +52,14 @@ export default function PracticePage() {
         body: JSON.stringify({ prompt }),
       })
 
-      if (!res.ok) {
-        const j = await res.json()
-        throw new Error(j.error || 'Generation failed')
-      }
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error ?? 'Generation failed')
 
-      const j = await res.json()
-      setData(j)
+      setData(json)
       setStarted(false)
       setAnswers({})
     } catch (e: any) {
-      setError(e.message)
+      setError(e?.message ?? 'Something went wrong')
     } finally {
       setLoading(false)
     }
@@ -57,7 +67,7 @@ export default function PracticePage() {
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 space-y-6">
-      <Card className="p-6 space-y-4">
+      <Panel className="p-6 space-y-4">
         <textarea
           className="w-full rounded-xl border border-white/10 bg-black/20 p-3 text-sm"
           placeholder="Describe the test you want..."
@@ -76,16 +86,14 @@ export default function PracticePage() {
         </div>
 
         {error && <p className="text-sm text-red-400">{error}</p>}
-      </Card>
+      </Panel>
 
       {!data && (
-        <p className="text-sm text-white/50 text-center">
-          Generate a test to see it here.
-        </p>
+        <p className="text-sm text-white/50 text-center">Generate a test to see it here.</p>
       )}
 
       {data && (
-        <Card className="p-6 space-y-6">
+        <Panel className="p-6 space-y-6">
           <div>
             <h2 className="text-lg font-semibold">{data.title}</h2>
             <p className="text-xs text-white/50">
@@ -108,7 +116,7 @@ export default function PracticePage() {
               {data.questions.map((q, i) => (
                 <div
                   key={q.id}
-                  className="rounded-3xl border border-white/10 bg-white/5 p-4 space-y-3"
+                  className="rounded-3xl border border-white/10 bg-black/20 p-4 space-y-3"
                 >
                   <div className="text-sm text-white/80 flex gap-2">
                     <span>{i + 1}.</span>
@@ -151,7 +159,7 @@ export default function PracticePage() {
               ))}
             </div>
           )}
-        </Card>
+        </Panel>
       )}
     </div>
   )

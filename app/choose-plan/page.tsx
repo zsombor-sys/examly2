@@ -101,7 +101,7 @@ function Inner() {
 
           <Button
             className="mt-6 w-full gap-2"
-            variant="secondary"
+           variant="ghost"
             onClick={activateFree}
             disabled={loading || fullName.trim().length < 2 || phone.trim().length < 6}
           >

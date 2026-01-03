@@ -1,14 +1,11 @@
 import { supabase } from '@/lib/supabaseClient'
 
-export async function getAccessToken(): Promise<string | null> {
-  if (!supabase) return null
-  const { data } = await supabase.auth.getSession()
-  return data.session?.access_token ?? null
-}
-
 export async function authedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  const token = await getAccessToken()
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
+
   const headers = new Headers(init.headers || {})
   if (token) headers.set('Authorization', `Bearer ${token}`)
+
   return fetch(input, { ...init, headers })
 }

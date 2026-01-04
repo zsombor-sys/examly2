@@ -1,9 +1,8 @@
 'use client'
 
-import Image from 'next/image'
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Card, Input, Textarea } from '@/components/ui'
+import { Button, Card, Textarea } from '@/components/ui'
 import MarkdownMath from '@/components/MarkdownMath'
 import InlineMath from '@/components/InlineMath'
 import { FileUp, Loader2, Trash2, Play, Pause, RotateCcw, ArrowLeft } from 'lucide-react'
@@ -38,7 +37,12 @@ type SavedPlan = { id: string; title: string; created_at: string }
 
 function fmtDate(d: string) {
   try {
-    return new Date(d).toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    return new Date(d).toLocaleString(undefined, {
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
   } catch {
     return d
   }
@@ -46,11 +50,6 @@ function fmtDate(d: string) {
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n))
-}
-
-function splitBullets(text: string) {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
-  return lines.map((l) => l.replace(/^[-•]\s?/, ''))
 }
 
 function titleFromPrompt(p: string) {
@@ -68,10 +67,6 @@ function normalizeBlocks(blocks?: Block[]) {
       minutes: clamp(Math.round(b.minutes), 1, 120),
       label: (b.label || '').trim() || (b.type === 'break' ? 'Break' : 'Focus'),
     }))
-}
-
-function totalMinutes(blocks: Block[]) {
-  return blocks.reduce((s, b) => s + (b.minutes || 0), 0)
 }
 
 function secondsToMMSS(s: number) {
@@ -112,10 +107,7 @@ function Inner() {
   useEffect(() => {
     if (!running) return
     tickRef.current = window.setInterval(() => {
-      setSecondsLeft((s) => {
-        if (s <= 1) return 0
-        return s - 1
-      })
+      setSecondsLeft((s) => (s <= 1 ? 0 : s - 1))
     }, 1000)
     return () => {
       if (tickRef.current) window.clearInterval(tickRef.current)
@@ -127,7 +119,6 @@ function Inner() {
     if (!running) return
     if (secondsLeft !== 0) return
 
-    // auto-next
     setRunning(false)
     setTimeout(() => {
       setBlockIndex((i) => {
@@ -139,11 +130,11 @@ function Inner() {
   }, [secondsLeft, running, blocks.length])
 
   useEffect(() => {
-    // when block changes, reset timer to that block
     if (!activeBlock) return
     setSecondsLeft(activeBlock.minutes * 60)
     setRunning(false)
-  }, [blockIndex]) // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockIndex])
 
   async function loadHistory() {
     try {
@@ -166,13 +157,16 @@ function Inner() {
       const res = await authedFetch(`/api/plan?id=${encodeURIComponent(id)}`)
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error ?? 'Failed to load')
+
       setSelectedId(id)
       setResult(json?.result ?? null)
+
       const b = normalizeBlocks(json?.result?.daily_plan?.[0]?.blocks ?? [])
       setBlocks(b)
       setBlockIndex(0)
       setRunning(false)
-      if (b[0]) setSecondsLeft(b[0].minutes * 60)
+      setSecondsLeft(b[0] ? b[0].minutes * 60 : 25 * 60)
+
       setTab('plan')
     } catch (e: any) {
       setError(e?.message ?? 'Error')
@@ -208,12 +202,11 @@ function Inner() {
       setResult(r)
       setTab('plan')
 
-      // seed pomodoro from day 1 blocks if present
       const b = normalizeBlocks(r?.daily_plan?.[0]?.blocks ?? [])
       setBlocks(b)
       setBlockIndex(0)
       setRunning(false)
-      if (b[0]) setSecondsLeft(b[0].minutes * 60)
+      setSecondsLeft(b[0] ? b[0].minutes * 60 : 25 * 60)
 
       await loadHistory()
     } catch (e: any) {
@@ -239,7 +232,7 @@ function Inner() {
   const planTitle = result?.title ?? titleFromPrompt(prompt)
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10">
+    <div className="mx-auto max-w-6xl px-4 py-10 overflow-x-hidden">
       <div className="flex items-center justify-between">
         <Link href="/" className="inline-flex items-center gap-2 text-white/70 hover:text-white">
           <ArrowLeft size={18} />
@@ -248,9 +241,7 @@ function Inner() {
 
         <div className="text-xs text-white/50">
           {result?.language ? (
-            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
-              {result.language}
-            </span>
+            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">{result.language}</span>
           ) : null}
         </div>
       </div>
@@ -259,6 +250,7 @@ function Inner() {
         {/* LEFT SIDEBAR */}
         <div className="rounded-3xl border border-white/10 bg-black/40 p-5">
           <div className="text-xs uppercase tracking-[0.18em] text-white/55">History</div>
+
           <div className="mt-3 space-y-2">
             {saved.length === 0 ? (
               <div className="text-sm text-white/50">No saved plans yet.</div>
@@ -291,6 +283,7 @@ function Inner() {
           </div>
 
           <div className="mt-6 text-xs uppercase tracking-[0.18em] text-white/55">Input</div>
+
           <Textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
@@ -327,17 +320,15 @@ function Inner() {
 
         {/* MAIN */}
         <div className="min-w-0">
-          <div className="rounded-3xl border border-white/10 bg-black/40 p-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="rounded-3xl border border-white/10 bg-black/40 p-6 min-w-0">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between min-w-0">
               <div className="min-w-0">
                 <div className="text-xs uppercase tracking-[0.18em] text-white/55">Plan</div>
-                <h1 className="mt-2 text-2xl md:text-3xl font-semibold tracking-tight text-white">
+                <h1 className="mt-2 text-2xl md:text-3xl font-semibold tracking-tight text-white break-words">
                   {planTitle}
                 </h1>
                 {result?.quick_summary ? (
-                  <p className="mt-2 max-w-[80ch] text-sm text-white/70">
-                    {result.quick_summary}
-                  </p>
+                  <p className="mt-2 max-w-[80ch] text-sm text-white/70 break-words">{result.quick_summary}</p>
                 ) : (
                   <p className="mt-2 max-w-[80ch] text-sm text-white/50">
                     Generate a plan to see your schedule, notes, flashcards, and practice questions.
@@ -345,8 +336,8 @@ function Inner() {
                 )}
               </div>
 
-              {/* Tabs: only scroll if needed */}
-              <HScroll className="-mx-1 px-1 gap-2">
+              {/* Tabs: ONLY scroll when needed */}
+              <HScroll className="w-full lg:w-auto justify-start lg:justify-end -mx-1 px-1">
                 {(['plan', 'notes', 'daily', 'practice', 'export'] as const).map((k) => (
                   <Button
                     key={k}
@@ -360,7 +351,7 @@ function Inner() {
               </HScroll>
             </div>
 
-            <div className="mt-6">
+            <div className="mt-6 min-w-0">
               {!result && (
                 <div className="text-sm text-white/55">
                   Tip: add the exam date and your material (PDF / photo). The plan becomes much more accurate.
@@ -368,19 +359,19 @@ function Inner() {
               )}
 
               {tab === 'plan' && result && (
-                <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                <div className="grid gap-6 lg:grid-cols-[1fr_320px] min-w-0">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Study notes</div>
-                    <div className="mt-3">
+                    <div className="mt-3 min-w-0">
                       <MarkdownMath content={result.study_notes} />
                     </div>
                   </section>
 
-                  <aside className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                  <aside className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
 
-                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4">
-                      <div className="flex items-start justify-between gap-3">
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 min-w-0">
+                      <div className="flex items-start justify-between gap-3 min-w-0">
                         <div className="min-w-0">
                           <div className="text-xs text-white/55">Session</div>
                           <div className="mt-1 text-lg font-semibold leading-snug text-white break-words">
@@ -388,7 +379,8 @@ function Inner() {
                           </div>
                           <div className="mt-1 text-sm text-white/60">Focus time</div>
                         </div>
-                        <div className="text-right">
+
+                        <div className="text-right shrink-0">
                           <div className="text-xs uppercase tracking-[0.18em] text-white/55">Timer</div>
                           <div className="mt-1 text-3xl font-semibold tabular-nums text-white">
                             {secondsToMMSS(secondsLeft)}
@@ -407,8 +399,8 @@ function Inner() {
                         ) : null}
                       </div>
 
-                      {/* Pomodoro controls: scroll only if needed */}
-                      <HScroll className="mt-4 gap-2">
+                      {/* Controls row: ONLY scroll when needed */}
+                      <HScroll className="mt-4 -mx-1 px-1">
                         <Button
                           onClick={() => setRunning((v) => !v)}
                           disabled={!activeBlock}
@@ -451,19 +443,19 @@ function Inner() {
               )}
 
               {tab === 'notes' && result && (
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                <div className="grid gap-6 lg:grid-cols-2 min-w-0">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Quick summary</div>
-                    <div className="mt-3 text-white/80">
+                    <div className="mt-3 text-white/80 min-w-0">
                       <MarkdownMath content={result.quick_summary} />
                     </div>
                   </section>
 
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Flashcards</div>
                     <div className="mt-3 grid gap-3">
                       {result.flashcards?.slice(0, 8).map((c, i) => (
-                        <div key={i} className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div key={i} className="rounded-2xl border border-white/10 bg-black/30 p-4 min-w-0">
                           <div className="text-sm font-semibold text-white/90 break-words">{c.front}</div>
                           <div className="mt-2 text-sm text-white/70 break-words">{c.back}</div>
                         </div>
@@ -477,20 +469,19 @@ function Inner() {
               )}
 
               {tab === 'daily' && result && (
-                <div className="space-y-6">
+                <div className="space-y-6 min-w-0">
                   {result.daily_plan?.map((d, di) => {
                     const b = normalizeBlocks(d.blocks)
                     return (
-                      <section key={di} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
-                        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                      <section key={di} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
                           <div className="min-w-0">
                             <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
                             <div className="mt-2 text-xl font-semibold text-white break-words">{d.focus}</div>
                           </div>
 
-                          {/* block chips scroll if needed */}
                           {b.length ? (
-                            <HScroll className="gap-2">
+                            <HScroll className="w-full md:w-auto justify-start md:justify-end -mx-1 px-1">
                               {b.map((x, i) => (
                                 <span
                                   key={i}
@@ -518,11 +509,11 @@ function Inner() {
               )}
 
               {tab === 'practice' && result && (
-                <div className="space-y-6">
+                <div className="space-y-6 min-w-0">
                   {result.practice_questions?.map((q, qi) => (
-                    <section key={q.id ?? qi} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="text-sm font-semibold text-white/90">
+                    <section key={q.id ?? qi} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+                      <div className="flex items-start justify-between gap-3 min-w-0">
+                        <div className="text-sm font-semibold text-white/90 min-w-0 break-words">
                           {qi + 1}. <InlineMath content={q.question} />
                         </div>
                         <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
@@ -563,14 +554,13 @@ function Inner() {
               )}
 
               {tab === 'export' && result && (
-                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
                   <div className="text-xs uppercase tracking-[0.18em] text-white/55">Export</div>
                   <p className="mt-2 text-sm text-white/70">
-                    Download your plan or notes as a PDF. (If your bank required confirmation for Pro, Billing will show it.)
+                    Download your plan or notes as a PDF.
                   </p>
 
-                  {/* export buttons row: scroll if needed */}
-                  <HScroll className="-mx-1 mt-4 px-1 gap-2">
+                  <HScroll className="mt-4 -mx-1 px-1">
                     <Button
                       onClick={async () => {
                         try {
@@ -626,6 +616,7 @@ function Inner() {
                           (result.practice_questions ?? [])
                             .map((q, i) => `### ${i + 1}. ${q.question}\n${q.options?.length ? q.options.map((o) => `- ${o}`).join('\n') + '\n' : ''}\n**Answer:** ${q.answer ?? ''}\n`)
                             .join('\n')
+
                         const blob = new Blob([md], { type: 'text/markdown' })
                         const url = URL.createObjectURL(blob)
                         const a = document.createElement('a')
@@ -643,41 +634,6 @@ function Inner() {
               )}
             </div>
           </div>
-
-          {result?.daily_plan?.length ? (
-            <div className="mt-8 rounded-3xl border border-white/10 bg-black/30 p-6">
-              <div className="text-xs uppercase tracking-[0.18em] text-white/55">Preview</div>
-              <div className="mt-3 grid gap-6 lg:grid-cols-2">
-                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Day 1</div>
-                  <div className="mt-2 text-lg font-semibold text-white break-words">{result.daily_plan[0].focus}</div>
-                  <ul className="mt-3 space-y-2 text-sm text-white/80">
-                    {result.daily_plan[0].tasks?.slice(0, 6).map((t, i) => (
-                      <li key={i} className="flex gap-2">
-                        <span className="text-white/40">•</span>
-                        <span className="break-words">{t}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Flashcards</div>
-                  <div className="mt-3 grid gap-3">
-                    {result.flashcards?.slice(0, 3).map((c, i) => (
-                      <div key={i} className="rounded-2xl border border-white/10 bg-black/30 p-4">
-                        <div className="text-sm font-semibold text-white/90 break-words">{c.front}</div>
-                        <div className="mt-2 text-sm text-white/70 break-words">{c.back}</div>
-                      </div>
-                    ))}
-                    {!result.flashcards?.length ? (
-                      <div className="text-sm text-white/55">No flashcards generated.</div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : null}
         </div>
       </div>
     </div>

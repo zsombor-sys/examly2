@@ -11,24 +11,21 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>
+      <body className="min-h-screen overflow-x-hidden">
         <div className="fixed inset-0 grid-bg pointer-events-none" />
         <div className="fixed inset-0 glow pointer-events-none" />
 
-        {/* IMPORTANT: prevent any horizontal overflow on mobile */}
-        <div className="min-h-screen overflow-x-hidden">
-          <Navbar />
-          <main className="overflow-x-hidden">{children}</main>
+        <Navbar />
+        <main>{children}</main>
 
-          <footer className="border-t border-white/5 mt-24">
-            <div className="mx-auto max-w-6xl px-4 py-10 text-sm text-white/50">
-              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <span>© {new Date().getFullYear()} Examly</span>
-                <span className="text-white/40">Built for structured learning. Not endless chat.</span>
-              </div>
+        <footer className="border-t border-white/5 mt-24">
+          <div className="mx-auto max-w-6xl px-4 py-10 text-sm text-white/50">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <span>© {new Date().getFullYear()} Examly</span>
+              <span className="text-white/40">Built for structured learning. Not endless chat.</span>
             </div>
-          </footer>
-        </div>
+          </div>
+        </footer>
       </body>
     </html>
   )

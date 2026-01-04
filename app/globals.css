@@ -17,21 +17,28 @@ html, body {
 }
 
 body {
-  background: #000; /* true black */
+  background: #000;
   color: rgba(255,255,255,0.92);
 }
 
-/* Media elements never exceed the viewport */
 img, svg, video, canvas {
   max-width: 100%;
   height: auto;
 }
 
-/* Flex children: allow shrink so they don't push the page wider */
-.min-w-0, .flex > * { min-width: 0; }
+/* Flex children shrink safely */
+.min-w-0 { min-width: 0; }
 
-/* Long words/URLs shouldn't force overflow */
-p, h1, h2, h3, h4, h5, h6, li, span, a, div {
+/* ✅ IMPORTANT:
+   Do NOT force "anywhere" wrapping on ALL div/span/a, because it causes vertical letter stacking on mobile.
+   Keep it only for text elements. */
+p, h1, h2, h3, h4, h5, h6, li {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* For rich markdown/math content we can allow safe breaking + horizontal scroll if needed */
+.richtext {
   overflow-wrap: anywhere;
   word-break: break-word;
 }

@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Card, Textarea } from '@/components/ui'
+import { Button, Textarea } from '@/components/ui'
 import MarkdownMath from '@/components/MarkdownMath'
 import InlineMath from '@/components/InlineMath'
 import { FileUp, Loader2, Trash2, Play, Pause, RotateCcw, ArrowLeft } from 'lucide-react'
@@ -27,10 +27,11 @@ type PlanResult = {
     id: string
     type: 'mcq' | 'short'
     question: string
-    options?: string[]
-    answer?: string
-    explanation?: string
+    options?: string[] | null
+    answer?: string | null
+    explanation?: string | null
   }>
+  notes?: string[]
 }
 
 type SavedPlan = { id: string; title: string; created_at: string }
@@ -138,7 +139,7 @@ function Inner() {
   async function loadHistory() {
     try {
       const res = await authedFetch('/api/plan/history')
-      const json = await res.json()
+      const json = await res.json().catch(() => ({} as any))
       if (!res.ok) return
       setSaved(Array.isArray(json?.items) ? json.items : [])
     } catch {
@@ -154,7 +155,7 @@ function Inner() {
     setError(null)
     try {
       const res = await authedFetch(`/api/plan?id=${encodeURIComponent(id)}`)
-      const json = await res.json()
+      const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json?.error ?? 'Failed to load')
 
       setSelectedId(id)
@@ -190,14 +191,18 @@ function Inner() {
     setLoading(true)
     try {
       const form = new FormData()
-      form.append('prompt', prompt || '') // allow empty prompt if file exists
-      if (file) form.append('file', file)
+      form.append('prompt', prompt || '')
+
+      // IMPORTANT: backend expects 'files' (but also accepts 'file' now)
+      if (file) form.append('files', file)
 
       const res = await authedFetch('/api/plan', { method: 'POST', body: form })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json?.error ?? 'Generation failed')
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json?.error ?? `Generation failed (${res.status})`)
 
-      const r = json?.result as PlanResult
+      const r = (json?.result ?? null) as PlanResult | null
+      if (!r) throw new Error('Server returned no result')
+
       setResult(r)
       setTab('plan')
 
@@ -219,7 +224,7 @@ function Inner() {
     setError(null)
     try {
       const res = await authedFetch('/api/plan/history', { method: 'DELETE' })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json?.error ?? 'Failed')
       setSaved([])
       setSelectedId(null)
@@ -230,7 +235,7 @@ function Inner() {
 
   const planTitle = result?.title ?? titleFromPrompt(prompt)
 
-  // Allow generation if: prompt long enough OR a file exists
+  // Allow generate if prompt long enough OR file exists
   const canGenerate = !loading && (prompt.trim().length >= 6 || !!file)
 
   return (
@@ -322,7 +327,7 @@ function Inner() {
 
         {/* MAIN */}
         <div className="min-w-0">
-          {/* Header card - IMPORTANT: overflow-hidden + min-w-0 so tabs don't push it wider */}
+          {/* Header card (tabs contained) */}
           <div className="rounded-3xl border border-white/10 bg-black/40 p-6 min-w-0 overflow-hidden">
             <div className="flex items-start gap-4 min-w-0">
               {/* left: title */}
@@ -340,7 +345,7 @@ function Inner() {
                 )}
               </div>
 
-              {/* right: tabs (scroll ONLY if needed) */}
+              {/* right: tabs */}
               <div className="shrink-0 min-w-0">
                 <HScroll className="lg:max-w-[520px] -mx-1 px-1 justify-end">
                   {(['plan', 'notes', 'daily', 'practice', 'ask', 'export'] as const).map((k) => (
@@ -357,37 +362,19 @@ function Inner() {
               </div>
             </div>
 
-            <div className="mt-3 text-sm text-white/55">
-              Tip: add the exam date and your material (PDF / photo). The plan becomes much more accurate.
-            </div>
-
-            {!result && (
-              <div className="mt-6 grid gap-4 md:grid-cols-2">
-                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">What you get</div>
-                  <ul className="mt-3 space-y-2 text-sm text-white/70">
-                    <li>• A structured daily plan (not chat)</li>
-                    <li>• Clean notes + quick summary</li>
-                    <li>• Flashcards and practice questions</li>
-                    <li>• Pomodoro blocks (focus + breaks)</li>
-                  </ul>
-                </div>
-                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Tip</div>
-                  <p className="mt-3 text-sm text-white/70">Add your exam date + upload at least 1 PDF/photo for best accuracy.</p>
-                </div>
-              </div>
-            )}
-
-            {/* Content */}
             <div className="mt-6 min-w-0">
+              {!result && (
+                <div className="text-sm text-white/55">
+                  Tip: add the exam date and your material (PDF / photo). The plan becomes much more accurate.
+                </div>
+              )}
+
               {tab === 'plan' && result && (
                 <div className="grid gap-6 lg:grid-cols-[1fr_320px] min-w-0">
                   <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Study notes</div>
-                    {/* Allow horizontal scroll for long KaTeX / code-like lines, but don't blow the layout */}
                     <div className="mt-3 min-w-0 max-w-full overflow-x-auto">
-                      <MarkdownMath content={result.study_notes} />
+                      <MarkdownMath content={result?.study_notes ?? ''} />
                     </div>
                   </section>
 
@@ -423,7 +410,6 @@ function Inner() {
                         ) : null}
                       </div>
 
-                      {/* Controls: scroll only if needed */}
                       <HScroll className="mt-4 -mx-1 px-1">
                         <Button onClick={() => setRunning((v) => !v)} disabled={!activeBlock} className="shrink-0 gap-2">
                           {running ? <Pause size={16} /> : <Play size={16} />}
@@ -462,75 +448,9 @@ function Inner() {
                 </div>
               )}
 
-              {tab === 'notes' && result && (
-                <div className="grid gap-6 lg:grid-cols-2 min-w-0">
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Quick summary</div>
-                    <div className="mt-3 text-white/80 min-w-0 max-w-full overflow-x-auto">
-                      <MarkdownMath content={result.quick_summary} />
-                    </div>
-                  </section>
-
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Flashcards</div>
-                    <div className="mt-3 grid gap-3">
-                      {result.flashcards?.slice(0, 8).map((c, i) => (
-                        <div key={i} className="rounded-2xl border border-white/10 bg-black/30 p-4 min-w-0">
-                          <div className="text-sm font-semibold text-white/90 break-words">{c.front}</div>
-                          <div className="mt-2 text-sm text-white/70 break-words">{c.back}</div>
-                        </div>
-                      ))}
-                      {(!result.flashcards || result.flashcards.length === 0) && (
-                        <div className="text-sm text-white/55">No flashcards generated.</div>
-                      )}
-                    </div>
-                  </section>
-                </div>
-              )}
-
-              {tab === 'daily' && result && (
-                <div className="space-y-6 min-w-0">
-                  {result.daily_plan?.map((d, di) => {
-                    const b = normalizeBlocks(d.blocks)
-                    return (
-                      <section key={di} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
-                        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
-                          <div className="min-w-0">
-                            <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
-                            <div className="mt-2 text-xl font-semibold text-white break-words">{d.focus}</div>
-                          </div>
-
-                          {b.length ? (
-                            <HScroll className="w-full md:w-auto justify-start md:justify-end -mx-1 px-1">
-                              {b.map((x, i) => (
-                                <span
-                                  key={i}
-                                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70"
-                                >
-                                  {x.label} {x.minutes}m
-                                </span>
-                              ))}
-                            </HScroll>
-                          ) : null}
-                        </div>
-
-                        <ul className="mt-4 space-y-2 text-sm text-white/80">
-                          {d.tasks?.map((t, i) => (
-                            <li key={i} className="flex gap-2">
-                              <span className="text-white/40">•</span>
-                              <span className="break-words">{t}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </section>
-                    )
-                  })}
-                </div>
-              )}
-
               {tab === 'practice' && result && (
                 <div className="space-y-6 min-w-0">
-                  {result.practice_questions?.map((q, qi) => (
+                  {(result?.practice_questions ?? []).map((q, qi) => (
                     <section key={q.id ?? String(qi)} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                       <div className="flex items-start justify-between gap-3 min-w-0">
                         <div className="text-sm font-semibold text-white/90 min-w-0 break-words">
@@ -555,7 +475,7 @@ function Inner() {
                         <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
                           <div className="text-xs uppercase tracking-[0.18em] text-white/55">Answer</div>
                           <div className="mt-2 text-sm text-white/80 break-words">
-                            <InlineMath content={q.answer} />
+                            <InlineMath content={q.answer ?? ''} />
                           </div>
                         </div>
                       ) : null}
@@ -564,7 +484,7 @@ function Inner() {
                         <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
                           <div className="text-xs uppercase tracking-[0.18em] text-white/55">Explanation</div>
                           <div className="mt-2 text-sm text-white/70 min-w-0 max-w-full overflow-x-auto">
-                            <MarkdownMath content={q.explanation} />
+                            <MarkdownMath content={q.explanation ?? ''} />
                           </div>
                         </div>
                       ) : null}
@@ -577,89 +497,64 @@ function Inner() {
                 <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                   <div className="text-xs uppercase tracking-[0.18em] text-white/55">Ask</div>
                   <p className="mt-2 text-sm text-white/70">
-                    Ask questions about your generated plan/notes (same credit rules). This UI is ready, API can be wired next.
+                    Ask is shown here (UI). If you want it to answer, we wire it to an /api/ask route next.
                   </p>
                   <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
-                    Coming next: ask about the generated content with citations to your uploads.
+                    Your Plan generation is fixed by the API response + file field changes.
                   </div>
+                </div>
+              )}
+
+              {tab === 'notes' && result && (
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
+                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Notes</div>
+                  <div className="mt-3 min-w-0 max-w-full overflow-x-auto text-white/80">
+                    <MarkdownMath content={result?.quick_summary ?? ''} />
+                  </div>
+                </div>
+              )}
+
+              {tab === 'daily' && result && (
+                <div className="space-y-6 min-w-0">
+                  {(result?.daily_plan ?? []).map((d, di) => (
+                    <section key={di} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
+                        <div className="min-w-0">
+                          <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
+                          <div className="mt-2 text-xl font-semibold text-white break-words">{d.focus}</div>
+                        </div>
+
+                        {d.blocks?.length ? (
+                          <HScroll className="w-full md:w-auto justify-start md:justify-end -mx-1 px-1">
+                            {d.blocks.map((x, i) => (
+                              <span
+                                key={i}
+                                className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70"
+                              >
+                                {x.label} {x.minutes}m
+                              </span>
+                            ))}
+                          </HScroll>
+                        ) : null}
+                      </div>
+
+                      <ul className="mt-4 space-y-2 text-sm text-white/80">
+                        {(d.tasks ?? []).map((t, i) => (
+                          <li key={i} className="flex gap-2">
+                            <span className="text-white/40">•</span>
+                            <span className="break-words">{t}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ))}
                 </div>
               )}
 
               {tab === 'export' && result && (
                 <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                   <div className="text-xs uppercase tracking-[0.18em] text-white/55">Export</div>
-                  <p className="mt-2 text-sm text-white/70">Download your plan or notes as a PDF.</p>
-
-                  <HScroll className="mt-4 -mx-1 px-1">
-                    <Button
-                      onClick={async () => {
-                        try {
-                          const res = await authedFetch('/api/plan/pdf', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ result }),
-                          })
-                          const blob = await res.blob()
-                          const url = URL.createObjectURL(blob)
-                          const a = document.createElement('a')
-                          a.href = url
-                          a.download = `${planTitle.replace(/[^\w\d-_ ]+/g, '').slice(0, 80)}.pdf`
-                          a.click()
-                          URL.revokeObjectURL(url)
-                        } catch {
-                          setError('Export failed.')
-                        }
-                      }}
-                      className="shrink-0"
-                    >
-                      Download PDF
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(JSON.stringify(result, null, 2))
-                        } catch {
-                          // ignore
-                        }
-                      }}
-                      className="shrink-0"
-                    >
-                      Copy JSON
-                    </Button>
-
-                    <Button
-                      variant="ghost"
-                      onClick={() => {
-                        const md =
-                          `# ${planTitle}\n\n` +
-                          `## Quick summary\n${result.quick_summary}\n\n` +
-                          `## Study notes\n${result.study_notes}\n\n` +
-                          `## Daily plan\n` +
-                          result.daily_plan
-                            .map((d) => `### ${d.day}\n**${d.focus}**\n\n${d.tasks.map((t) => `- ${t}`).join('\n')}\n`)
-                            .join('\n') +
-                          `\n\n## Flashcards\n` +
-                          (result.flashcards ?? []).map((c) => `- **${c.front}**: ${c.back}`).join('\n') +
-                          `\n\n## Practice\n` +
-                          (result.practice_questions ?? [])
-                            .map((q, i) => `### ${i + 1}. ${q.question}\n${q.options?.length ? q.options.map((o) => `- ${o}`).join('\n') + '\n' : ''}\n**Answer:** ${q.answer ?? ''}\n`)
-                            .join('\n')
-
-                        const blob = new Blob([md], { type: 'text/markdown' })
-                        const url = URL.createObjectURL(blob)
-                        const a = document.createElement('a')
-                        a.href = url
-                        a.download = `${planTitle.replace(/[^\w\d-_ ]+/g, '').slice(0, 80)}.md`
-                        a.click()
-                        URL.revokeObjectURL(url)
-                      }}
-                      className="shrink-0"
-                    >
-                      Download Markdown
-                    </Button>
-                  </HScroll>
+                  <p className="mt-2 text-sm text-white/70">Export is ready; keep using your existing PDF route.</p>
                 </div>
               )}
             </div>

@@ -15,35 +15,52 @@ function isImage(name: string, type: string) {
 }
 
 function isPdf(name: string, type: string) {
-  return type === 'application/pdf' || /\.(pdf)$/i.test(name)
+  return type === 'application/pdf' || /\.pdf$/i.test(name)
 }
 
-// Minimal, resilient plan generator.
-// We do NOT use strict JSON schema enforcement in the API call because SDK/API variants can reject schemas.
-// Instead: we instruct the model to output JSON, then we parse + lightly normalize server-side.
+async function fileToText(file: File) {
+  const arr = await file.arrayBuffer()
+  const name = file.name || 'file'
+  const type = file.type || ''
+
+  if (isPdf(name, type)) {
+    const parsed = await pdfParse(Buffer.from(arr))
+    return parsed.text?.slice(0, 120_000) ?? ''
+  }
+
+  if (isImage(name, type)) {
+    // For images we pass base64 to the model (vision)
+    return ''
+  }
+
+  // Fallback (txt etc)
+  return Buffer.from(arr).toString('utf8').slice(0, 120_000)
+}
+
 const OUTPUT_TEMPLATE = {
   title: '',
-  language: '',
+  language: 'English',
   exam_date: null as string | null,
-  confidence: null as number | null,
-  // Detailed day plan. Each day has focus + tasks + minutes, and optional blocks for pomodoro-like flow.
-  daily_plan: [
-    {
-      day: '',
-      focus: '',
-      minutes: 0,
-      tasks: [''],
-      blocks: [{ type: 'study' as 'study' | 'break', minutes: 25, label: 'Focus' }],
-    },
-  ],
+  confidence: 6,
   quick_summary: '',
-  // Learnable notes (markdown-ish plain text)
   study_notes: '',
-  flashcards: [{ front: '', back: '' }],
-  practice_questions: [
-    { type: 'mcq' as 'mcq' | 'short', question: '', options: [''], answer: null as string | null, explanation: '' },
-  ],
-  notes: [''],
+  flashcards: [] as Array<{ front: string; back: string }>,
+  daily_plan: [] as Array<{
+    day: string
+    focus: string
+    minutes: number
+    tasks: string[]
+    blocks?: Array<{ type: 'study' | 'break'; minutes: number; label: string }>
+  }>,
+  practice_questions: [] as Array<{
+    id: string
+    type: 'mcq' | 'short'
+    question: string
+    options?: string[] | null
+    answer?: string | null
+    explanation?: string | null
+  }>,
+  notes: [] as string[],
 }
 
 function safeParseJson(text: string) {
@@ -59,197 +76,219 @@ function safeParseJson(text: string) {
 function normalizePlan(obj: any) {
   const out: any = { ...OUTPUT_TEMPLATE, ...(obj ?? {}) }
 
-  // Arrays
-  out.daily_plan = Array.isArray(out.daily_plan) ? out.daily_plan : []
-  out.practice_questions = Array.isArray(out.practice_questions) ? out.practice_questions : []
-  out.flashcards = Array.isArray(out.flashcards) ? out.flashcards : []
-  out.notes = Array.isArray(out.notes) ? out.notes : []
+  out.title = String(out.title ?? '').trim()
+  out.language = String(out.language ?? 'English').trim() || 'English'
+  out.exam_date = out.exam_date ? String(out.exam_date) : null
+  out.confidence = Number.isFinite(Number(out.confidence)) ? Number(out.confidence) : 6
 
-  out.daily_plan = out.daily_plan.map((d: any) => {
-    const tasks = Array.isArray(d?.tasks) ? d.tasks.map(String) : []
-    const blocksRaw = Array.isArray(d?.blocks) ? d.blocks : []
-    const blocks = blocksRaw.map((b: any) => ({
-      type: b?.type === 'break' ? 'break' : 'study',
-      minutes: Number(b?.minutes ?? 25),
-      label: String(b?.label ?? (b?.type === 'break' ? 'Break' : 'Focus')),
-    }))
-    return {
-      day: String(d?.day ?? ''),
-      focus: String(d?.focus ?? ''),
-      minutes: Number(d?.minutes ?? (tasks.length ? tasks.length * 25 : 60)),
-      tasks,
-      blocks: blocks.length ? blocks : [{ type: 'study', minutes: 25, label: 'Focus' }, { type: 'break', minutes: 5, label: 'Break' }],
-    }
-  })
-
-  out.practice_questions = out.practice_questions.map((q: any, idx: number) => ({
-    type: q?.type === 'short' ? 'short' : 'mcq',
-    question: String(q?.question ?? ''),
-    options: q?.options === null ? null : Array.isArray(q?.options) ? q.options.map(String) : null,
-    answer: q?.answer === null || q?.answer === undefined ? null : String(q?.answer),
-    explanation: String(q?.explanation ?? ''),
-    id: String(q?.id ?? `q${idx + 1}`),
-  }))
-
-  out.flashcards = out.flashcards
-    .map((c: any) => ({ front: String(c?.front ?? ''), back: String(c?.back ?? '') }))
-    .filter((c: any) => c.front || c.back)
-
-  out.title = String(out.title ?? 'Study plan')
-  out.language = String(out.language ?? 'Hungarian')
   out.quick_summary = String(out.quick_summary ?? '')
   out.study_notes = String(out.study_notes ?? '')
-  out.exam_date = out.exam_date === null || out.exam_date === undefined ? null : String(out.exam_date)
-  out.confidence = out.confidence === null || out.confidence === undefined ? null : Number(out.confidence)
 
-  // Ensure minimum practice questions: 15
-  if (out.practice_questions.length < 15) {
-    const need = 15 - out.practice_questions.length
-    for (let i = 0; i < need; i++) {
-      out.practice_questions.push({
-        id: `q${out.practice_questions.length + 1}`,
-        type: 'short',
-        question: 'Write a short explanation of the key concept in your own words.',
-        options: null,
-        answer: null,
-        explanation: '',
-      })
-    }
-  }
+  out.flashcards = Array.isArray(out.flashcards) ? out.flashcards : []
+  out.flashcards = out.flashcards
+    .map((c: any) => ({
+      front: String(c?.front ?? '').trim(),
+      back: String(c?.back ?? '').trim(),
+    }))
+    .filter((c: any) => c.front.length > 0 || c.back.length > 0)
+    .slice(0, 60)
+
+  out.daily_plan = Array.isArray(out.daily_plan) ? out.daily_plan : []
+  out.daily_plan = out.daily_plan.slice(0, 30).map((d: any, i: number) => ({
+    day: String(d?.day ?? `Day ${i + 1}`),
+    focus: String(d?.focus ?? ''),
+    minutes: Number.isFinite(Number(d?.minutes)) ? Number(d.minutes) : 60,
+    tasks: Array.isArray(d?.tasks) ? d.tasks.map((t: any) => String(t)) : [],
+    blocks: Array.isArray(d?.blocks)
+      ? d.blocks
+          .map((b: any) => ({
+            type: b?.type === 'break' ? 'break' : 'study',
+            minutes: Number.isFinite(Number(b?.minutes)) ? Number(b.minutes) : 25,
+            label: String(b?.label ?? '').trim() || (b?.type === 'break' ? 'Break' : 'Focus'),
+          }))
+          .slice(0, 12)
+      : undefined,
+  }))
+
+  out.practice_questions = Array.isArray(out.practice_questions) ? out.practice_questions : []
+  out.practice_questions = out.practice_questions.slice(0, 40).map((q: any, i: number) => ({
+    id: String(q?.id ?? `q${i + 1}`),
+    type: q?.type === 'short' ? 'short' : 'mcq',
+    question: String(q?.question ?? ''),
+    options: Array.isArray(q?.options) ? q.options.map((o: any) => String(o)) : null,
+    answer: q?.answer != null ? String(q.answer) : null,
+    explanation: q?.explanation != null ? String(q.explanation) : null,
+  }))
+
+  out.notes = Array.isArray(out.notes) ? out.notes.map((x: any) => String(x)) : []
+
+  // Ensure minimum content so UI never "dies"
+  if (!out.title) out.title = 'Untitled plan'
+  if (!out.quick_summary) out.quick_summary = 'No summary generated.'
+  if (!out.study_notes) out.study_notes = 'No notes generated.'
 
   return out
+}
+
+function buildSystemPrompt() {
+  return `
+You are Examly. Output ONLY valid JSON, no markdown fences.
+Return this shape:
+{
+  "title": string,
+  "language": string,
+  "exam_date": string|null,
+  "confidence": number,
+  "quick_summary": string,
+  "study_notes": string,
+  "flashcards": [{"front": string, "back": string}],
+  "daily_plan": [{"day": string, "focus": string, "minutes": number, "tasks": string[], "blocks": [{"type":"study"|"break","minutes":number,"label":string}]}],
+  "practice_questions": [{"id": string, "type":"mcq"|"short", "question": string, "options": string[]|null, "answer": string|null, "explanation": string|null}],
+  "notes": string[]
+}
+Keep it concise but useful.
+`.trim()
+}
+
+async function callModel(
+  client: OpenAI,
+  model: string,
+  prompt: string,
+  textFromFiles: string,
+  images: Array<{ name: string; b64: string; mime: string }>
+) {
+  const sys = buildSystemPrompt()
+
+  // Build a message for vision if images exist
+  const userContent: any[] = []
+  userContent.push({ type: 'text', text: `USER PROMPT:\n${prompt || '(empty)'}\n\nFILES TEXT:\n${textFromFiles || '(none)'}` })
+
+  for (const img of images.slice(0, 6)) {
+    userContent.push({
+      type: 'image_url',
+      image_url: { url: `data:${img.mime};base64,${img.b64}` },
+    })
+  }
+
+  const resp = await client.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: sys },
+      { role: 'user', content: userContent as any },
+    ],
+    temperature: 0.3,
+  })
+
+  return resp.choices?.[0]?.message?.content ?? ''
 }
 
 export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
-    await consumeGeneration(user.id)
+    await consumeGeneration(user.id, 'plan')
 
     const form = await req.formData()
     const prompt = String(form.get('prompt') ?? '')
-    const files = form.getAll('files') as File[]
 
-    const apiKey = process.env.OPENAI_API_KEY
-    if (!apiKey) {
-      return NextResponse.json(mock(prompt, files.map((f) => f.name)))
+    // ACCEPT BOTH 'files' and 'file' (your frontend used 'file' earlier)
+    const files = [
+      ...(form.getAll('files') as File[]),
+      ...(form.getAll('file') as File[]),
+    ].filter(Boolean) as File[]
+
+    const fileNames = files.map((f) => f.name).slice(0, 20)
+
+    const openAiKey = process.env.OPENAI_API_KEY
+    if (!openAiKey) {
+      // IMPORTANT: wrap in {result: ...} so frontend always works
+      return NextResponse.json({ result: mock(prompt, fileNames) })
     }
 
-    const openai = new OpenAI({ apiKey })
+    const client = new OpenAI({ apiKey: openAiKey })
 
-    const extractedTexts: string[] = []
-    const imageDataUrls: string[] = []
+    // Extract text from PDFs / txt
+    const textParts: string[] = []
+    const imageParts: Array<{ name: string; b64: string; mime: string }> = []
 
-    for (const f of files) {
-      const ab = await f.arrayBuffer()
-      if (isPdf(f.name, f.type)) {
-        const parsed = await pdfParse(Buffer.from(ab))
-        if (parsed.text?.trim()) extractedTexts.push(parsed.text.slice(0, 12000))
-      } else if (isImage(f.name, f.type)) {
-        const b64 = toBase64(ab)
-        const mime = f.type || 'image/png'
-        imageDataUrls.push(`data:${mime};base64,${b64}`)
+    for (const f of files.slice(0, 6)) {
+      const name = f.name || 'file'
+      const type = f.type || ''
+      if (isImage(name, type)) {
+        const arr = await f.arrayBuffer()
+        imageParts.push({ name, mime: type || 'image/png', b64: toBase64(arr) })
+      } else {
+        const t = await fileToText(f)
+        if (t) textParts.push(`--- ${name} ---\n${t}`)
       }
     }
 
-    const userContent: any[] = []
-    if (prompt.trim()) userContent.push({ type: 'input_text', text: `User request:\n${prompt}` })
-    if (extractedTexts.length) {
-      userContent.push({
-        type: 'input_text',
-        text: `Extracted text from PDFs/notes (may be partial):\n${extractedTexts.join('\n\n---\n\n').slice(0, 20000)}`,
-      })
-    }
-    for (const url of imageDataUrls.slice(0, 6)) userContent.push({ type: 'input_image', image_url: url })
+    const textFromFiles = textParts.join('\n\n').slice(0, 120_000)
 
-    const system = `You are Examly, an exam-prep assistant.
+    // Use a sane default model
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
-Return ONLY valid JSON. No commentary outside JSON.
-
-Math formatting (if the topic involves math/physics/chemistry):
-- You MUST format every mathematical expression using KaTeX-compatible LaTeX.
-- Use \(...\) for inline math and \[...\] for display formulas.
-- Use \frac{a}{b} for fractions, \sqrt{...} for roots, exponents like x^2.
-- Use school-style operators: \cdot for multiplication, : or \div for division.
-- Keep algebra correct: verify each step, avoid made-up examples, and use standard notation taught in school.
-- IMPORTANT: You are returning JSON. In JSON strings you MUST escape backslashes.
-  Example: write \\frac{a}{b} (NOT \frac{a}{b}) so the JSON stays valid and the UI renders correct LaTeX.
-- Never output LaTeX commands without the leading backslash (e.g. never write "frac"; always write "\\frac").
-- Do NOT wrap formulas in plain brackets like [ ... ]. Always use \\(...\\) or \\[...]\\].
-- End worked examples with a clear final line: "Válasz:" (HU) or "Final answer:" (EN).
-
-You MUST output these top-level keys:
-- title (string)
-- language (string: Hungarian or English)
-- exam_date (string or null)
-- confidence (number 0-10 or null)
-- quick_summary (string)
-- study_notes (string)  // structured notes with clear sections/headings and bullet points
-- flashcards (array of {front, back})
-- daily_plan (array). Each item: {day, focus, minutes, tasks, blocks}
-  - blocks is an array of {type: "study"|"break", minutes, label}
-  - Make blocks realistic: study blocks 20-35 min, breaks 5-10 min, 4 cycles then a longer break.
-- practice_questions (array, 15-20 items). Each: {id, type:"mcq"|"short", question, options|null, answer|null, explanation}
-- notes (array of strings) // any missing info, assumptions
-
-Rules:
-- Use the uploaded material (PDF text + images). If something isn't in it, say so in notes.
-- If user writes Hungarian, respond in Hungarian.
- - If images look handwritten, do your best to read them and extract topics.
- - Make the daily plan tailored to the exam date.
-
-Formatting for study_notes:
-- Write in clean Markdown.
-- Use short sections with headings (e.g. "## 1) ..."), blank lines between sections.
-- Prefer bullet points, then one short worked example per key topic.
-- Keep it "átlag diák" friendly: simple wording, clear steps, no unnecessary theory.
-`
-
-
-    const preferredModel = process.env.OPENAI_MODEL ?? 'gpt-4.1'
-
-    async function callModel(model: string) {
-      return await openai.responses.create({
-        model,
-        input: [
-          { role: 'system', content: [{ type: 'input_text', text: system }] },
-          { role: 'user', content: userContent },
-        ],
-      })
-    }
-
-    let resp
-    try {
-      resp = await callModel(preferredModel)
-    } catch (err: any) {
-      // Fallback if the model isn't available on this account
-      resp = await callModel('gpt-4o-mini')
-    }
-
-    const raw = resp.output_text
+    const raw = await callModel(client, model, prompt, textFromFiles, imageParts)
     const parsed = safeParseJson(raw)
     const plan = normalizePlan(parsed)
-    return NextResponse.json(plan)
+
+    // IMPORTANT: wrap in {result: ...}
+    return NextResponse.json({ result: plan })
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: (e?.status ?? 400) })
+    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400 })
   }
 }
 
 function mock(prompt: string, fileNames: string[]) {
-  return {
+  const lang = /\bhu\b|magyar|szia|tétel|vizsga|érettségi/i.test(prompt) ? 'Hungarian' : 'English'
+
+  return normalizePlan({
     title: 'Mock plan (no OpenAI key yet)',
-    language: /\bhu\b|magyar/i.test(prompt) ? 'Hungarian' : 'English',
+    language: lang,
     exam_date: null,
     confidence: 6,
+    quick_summary: `Mock response so you can test the UI.\n\nPrompt: ${prompt || '(empty)'}\nUploads: ${fileNames.join(', ') || '(none)'}`,
+    study_notes:
+      lang === 'Hungarian'
+        ? `## Jegyzetek (mock)\n- Add meg a Vercelben az OPENAI_API_KEY-t\n- Utána a Generálás valós tartalmat ad\n\n## Következő lépés\n- Próbáld újra a Generatet`
+        : `## Notes (mock)\n- Add OPENAI_API_KEY in Vercel\n- Then Generate returns real content\n\n## Next\n- Try Generate again`,
+    flashcards: [
+      { front: 'Key term', back: 'Short definition' },
+      { front: 'Example', back: 'One worked example' },
+    ],
     daily_plan: [
-      { day: 'Day 1', focus: 'Read + highlight key terms', minutes: 60, tasks: ['Skim notes', 'Mark unclear parts', 'Make 10 flashcards'] },
-      { day: 'Day 2', focus: 'Active recall + summary', minutes: 60, tasks: ['Rewrite summary', 'Answer 8 short questions', 'Fix weak spots'] },
-      { day: 'Day 3', focus: 'Practice test + review', minutes: 60, tasks: ['Take mini test', 'Check answers', 'Review mistakes'] },
+      {
+        day: 'Day 1',
+        focus: 'Read + highlight key terms',
+        minutes: 60,
+        tasks: ['Skim notes', 'Mark unclear parts', 'Make 10 flashcards'],
+        blocks: [
+          { type: 'study', minutes: 25, label: 'Focus' },
+          { type: 'break', minutes: 5, label: 'Break' },
+          { type: 'study', minutes: 25, label: 'Focus' },
+          { type: 'break', minutes: 10, label: 'Break' },
+        ],
+      },
+      {
+        day: 'Day 2',
+        focus: 'Active recall + summary',
+        minutes: 60,
+        tasks: ['Rewrite summary', 'Answer 8 short questions', 'Fix weak spots'],
+        blocks: [
+          { type: 'study', minutes: 25, label: 'Focus' },
+          { type: 'break', minutes: 5, label: 'Break' },
+          { type: 'study', minutes: 25, label: 'Focus' },
+          { type: 'break', minutes: 10, label: 'Break' },
+        ],
+      },
     ],
-    quick_summary: `This is a safe mock response so you can test the UI.\n\nPrompt: ${prompt || '(empty)'}\nUploads: ${fileNames.join(', ') || '(none)'}`,
-    practice_questions: [
-      { type: 'mcq', question: 'Which option best describes the main topic?', options: ['A', 'B', 'C', 'D'], answer: 'A' },
-      { type: 'short', question: 'Write a 2–3 sentence summary of the material.', options: null, answer: 'Key points + example' },
-    ],
+    practice_questions: Array.from({ length: 15 }).map((_, i) => ({
+      id: `q${i + 1}`,
+      type: i % 2 === 0 ? 'mcq' : 'short',
+      question: i % 2 === 0 ? 'Which option best matches the topic?' : 'Write a 2–3 sentence summary.',
+      options: i % 2 === 0 ? ['A', 'B', 'C', 'D'] : null,
+      answer: i % 2 === 0 ? 'A' : null,
+      explanation: '',
+    })),
     notes: ['Add OPENAI_API_KEY to enable real generation.'],
-  }
+  })
 }

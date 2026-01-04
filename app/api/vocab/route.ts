@@ -55,7 +55,7 @@ export async function POST(req: Request) {
     }
 
     const openai = new OpenAI({ apiKey })
-    const model = process.env.OPENAI_MODEL ?? 'gpt-4.1-mini'
+    const model = process.env.OPENAI_MODEL ?? 'gpt-5.1'
 
     const langName: Record<string, string> = {
       en: 'English',

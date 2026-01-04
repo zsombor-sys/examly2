@@ -547,7 +547,7 @@ function Inner() {
   </div>
 )}
 
-/* IDE JÖN AZ ASK */
+
 {tab === 'ask' && result && (
   <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Ask</div>

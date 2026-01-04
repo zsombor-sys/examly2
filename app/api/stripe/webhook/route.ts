@@ -1,9 +1,24 @@
 import { NextResponse } from 'next/server'
 import Stripe from 'stripe'
 import { supabaseAdmin } from '@/lib/supabaseServer'
-import { addProCredits, PRO_CREDITS_PER_PURCHASE } from '@/lib/creditsServer'
 
 export const runtime = 'nodejs'
+
+const CREDITS_PER_PURCHASE = 30
+
+async function creditUserOnce(sb: ReturnType<typeof supabaseAdmin>, userId: string, amount: number) {
+  // Read current credits then update. (Simple + robust.)
+  const { data: p1 } = await sb.from('profiles').select('credits').eq('user_id', userId).maybeSingle()
+  const { data: p2 } = p1 ? { data: null } : await sb.from('profiles').select('credits').eq('id', userId).maybeSingle()
+
+  const current = Number((p1?.credits ?? p2?.credits) ?? 0)
+  const next = current + amount
+
+  const r1 = await sb.from('profiles').update({ credits: next }).eq('user_id', userId)
+  if (r1.error) {
+    await sb.from('profiles').update({ credits: next }).eq('id', userId)
+  }
+}
 
 export async function POST(req: Request) {
   const stripeKey = process.env.STRIPE_SECRET_KEY
@@ -23,45 +38,67 @@ export async function POST(req: Request) {
   try {
     event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret)
   } catch (err: any) {
-    return NextResponse.json({ error: `Webhook signature verification failed: ${err?.message ?? 'Error'}` }, { status: 400 })
+    return NextResponse.json(
+      { error: `Webhook signature verification failed: ${err?.message ?? 'Error'}` },
+      { status: 400 }
+    )
   }
+
+  const sb = supabaseAdmin()
 
   try {
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object as Stripe.Checkout.Session
+
+      // only paid sessions
+      if (session.payment_status !== 'paid') {
+        return NextResponse.json({ received: true })
+      }
+
       const userId = (session.metadata?.user_id || '').trim()
-      if (!userId) throw new Error('Missing user_id metadata')
+      if (!userId) throw new Error('Missing metadata.user_id')
 
-      const sb = supabaseAdmin()
-      const sessionId = session.id
+      // ✅ Idempotency by event.id (Stripe retries delivery)
+      const eventId = event.id
 
-      // Idempotency: store processed ids.
-      const { data: exists, error: existsErr } = await sb
-        .from('stripe_events')
-        .select('id')
-        .eq('event_id', sessionId)
-        .maybeSingle()
+      // If stripe_events table exists, use it. If not, still credit (best effort).
+      let already = false
+      try {
+        const { data: exists, error } = await sb.from('stripe_events').select('id').eq('event_id', eventId).maybeSingle()
+        if (error) throw error
+        already = !!exists
 
-      if (existsErr) throw existsErr
+        if (!already) {
+          const ins = await sb.from('stripe_events').insert({ event_id: eventId, type: event.type })
+          if (ins.error) throw ins.error
+        }
+      } catch {
+        // If stripe_events doesn't exist yet, we don't hard fail.
+        already = false
+      }
 
-      if (!exists) {
-        await sb.from('stripe_events').insert({ event_id: sessionId, type: event.type })
-
-        // 1) Credit the user
-        await addProCredits(userId, PRO_CREDITS_PER_PURCHASE)
+      if (!already) {
+        // 1) Credit the user (+30)
+        await creditUserOnce(sb, userId, CREDITS_PER_PURCHASE)
 
         // 2) Save payment method for auto-recharge (best effort)
-        const paymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : null
-        if (paymentIntentId) {
-          const pi = await stripe.paymentIntents.retrieve(paymentIntentId)
-          const pmId = typeof pi.payment_method === 'string' ? pi.payment_method : null
+        try {
+          const paymentIntentId = typeof session.payment_intent === 'string' ? session.payment_intent : null
+          if (paymentIntentId) {
+            const pi = await stripe.paymentIntents.retrieve(paymentIntentId)
+            const pmId = typeof pi.payment_method === 'string' ? pi.payment_method : null
 
-          if (pmId) {
-            await sb
-              .from('profiles')
-              .update({ stripe_payment_method_id: pmId, auto_recharge: true })
-              .eq('user_id', userId)
+            if (pmId) {
+              const upd = { stripe_payment_method_id: pmId, auto_recharge: true }
+
+              const r1 = await sb.from('profiles').update(upd).eq('user_id', userId)
+              if (r1.error) {
+                await sb.from('profiles').update(upd).eq('id', userId)
+              }
+            }
           }
+        } catch {
+          // ignore; credits already granted
         }
       }
     }

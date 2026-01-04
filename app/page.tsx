@@ -1,171 +1,205 @@
 import Image from 'next/image'
 import Link from 'next/link'
-import type { ReactNode } from 'react'
 import { Button } from '@/components/ui'
-import { ArrowRight, Sparkles, Timer, FileUp, CheckCircle2 } from 'lucide-react'
+import { ArrowRight, FileText, Timer, Sparkles, CheckCircle2 } from 'lucide-react'
 
-function MiniStat({ icon, label }: { icon: ReactNode; label: string }) {
+function Pill({ icon, text }: { icon: React.ReactNode; text: string }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-left">
-      <div className="flex items-center gap-2 text-sm text-white/90">
-        <span className="text-white/80">{icon}</span>
-        <span className="font-medium">{label}</span>
-      </div>
+    <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white/80">
+      <span className="text-white/70">{icon}</span>
+      <span className="font-medium">{text}</span>
     </div>
   )
 }
 
+function CheckList() {
+  return (
+    <ul className="mt-6 space-y-2 text-sm text-white/70">
+      <li className="flex gap-2">
+        <CheckCircle2 size={16} className="mt-[2px] shrink-0 text-white/60" />
+        Built from your material
+      </li>
+      <li className="flex gap-2">
+        <CheckCircle2 size={16} className="mt-[2px] shrink-0 text-white/60" />
+        Clear structure, no fluff
+      </li>
+      <li className="flex gap-2">
+        <CheckCircle2 size={16} className="mt-[2px] shrink-0 text-white/60" />
+        Works in Hungarian and English
+      </li>
+    </ul>
+  )
+}
+
 function Feature({
-  kicker,
+  tag,
   title,
-  body,
+  desc,
   img,
   reverse,
 }: {
-  kicker: string
+  tag: string
   title: string
-  body: string
+  desc: string
   img: string
   reverse?: boolean
 }) {
   return (
-    <div className={'grid items-center gap-10 py-14 md:grid-cols-2 ' + (reverse ? 'md:[&>div:first-child]:order-2' : '')}>
-      <div className="min-w-0">
-        <div className="text-xs uppercase tracking-[0.18em] text-white/55">{kicker}</div>
-        <h3 className="mt-3 text-3xl md:text-4xl font-semibold tracking-tight">{title}</h3>
-        <p className="mt-4 text-base leading-relaxed text-white/70 max-w-[52ch]">{body}</p>
+    <section className="py-20">
+      <div className={"grid items-center gap-14 md:grid-cols-2 " + (reverse ? "md:[&>div:first-child]:order-2" : "")}>
+        <div className="min-w-0">
+          <div className="text-xs uppercase tracking-[0.22em] text-white/50">{tag}</div>
+          <h2 className="mt-4 text-4xl md:text-5xl font-semibold tracking-tight">{title}</h2>
+          <p className="mt-4 text-white/70 max-w-[70ch] leading-relaxed">{desc}</p>
+          <CheckList />
+        </div>
 
-        <ul className="mt-6 space-y-2 text-sm text-white/70">
-          <li className="flex gap-2">
-            <CheckCircle2 size={16} className="mt-[2px] text-white/70 shrink-0" /> Built from your material
-          </li>
-          <li className="flex gap-2">
-            <CheckCircle2 size={16} className="mt-[2px] text-white/70 shrink-0" /> Clear structure, no fluff
-          </li>
-          <li className="flex gap-2">
-            <CheckCircle2 size={16} className="mt-[2px] text-white/70 shrink-0" /> Works with PDFs and photos
-          </li>
-        </ul>
-
-        <div className="mt-7 flex flex-wrap gap-3">
-          <Link href="/login">
-            <Button className="gap-2">
-              Log in <ArrowRight size={16} />
-            </Button>
-          </Link>
-          <Link
-            href="/guide"
-            className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-white/80 hover:text-white"
-          >
-            View guide
-          </Link>
+        <div className="min-w-0">
+          <div className="fade-edges">
+            <Image
+              src={img}
+              alt={title}
+              width={1400}
+              height={900}
+              className="h-auto w-full"
+              priority={tag === 'NOTES'}
+            />
+          </div>
         </div>
       </div>
-
-      <div className="fade-edges rounded-2xl min-w-0">
-        <Image src={img} alt={title} width={1400} height={900} className="h-auto w-full" />
-      </div>
-    </div>
+    </section>
   )
 }
 
 export default function HomePage() {
   return (
     <div className="relative min-h-[calc(100vh-0px)] overflow-x-hidden">
+      {/* background layers (a layoutban is lehet, de itt így ugyanazt a feelinget adja) */}
       <div className="fixed inset-0 grid-bg pointer-events-none" />
       <div className="fixed inset-0 glow pointer-events-none" />
 
-      <main className="mx-auto max-w-6xl px-4 py-14">
-        {/* HERO (image UNDER the big text, like your old layout) */}
-        <section className="mx-auto max-w-6xl">
-          <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-white/70">
-              <Sparkles size={14} />
-              Structured exam prep from your own material
-            </div>
+      <main className="mx-auto max-w-6xl px-4 pb-20 pt-14">
+        {/* HERO */}
+        <section className="text-center">
+          <h1 className="text-5xl md:text-6xl font-semibold tracking-tight">
+            Turn messy notes into a clean <br className="hidden md:block" />
+            study system.
+          </h1>
 
-            <h1 className="mt-6 text-4xl md:text-5xl font-semibold tracking-tight">
-              Turn your notes into a real study plan.
-            </h1>
+          <p className="mx-auto mt-5 max-w-3xl text-white/70 text-lg leading-relaxed">
+            Upload PDFs or photos and get study notes you can actually learn from, a <br className="hidden md:block" />
+            daily plan with timers, and practice tests.
+          </p>
 
-            <p className="mt-4 text-white/70 max-w-[70ch]">
-              Upload PDFs or photos, describe the exam, and Examly builds a plan, practice questions and vocab cards. No
-              endless chat, just structure.
+          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <Link href="/login">
+              <Button className="gap-2 px-6">
+                Build my plan <ArrowRight size={16} />
+              </Button>
+            </Link>
+
+            <a
+              href="#features"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-6 py-2 text-sm text-white/85 hover:text-white"
+            >
+              <Sparkles size={16} />
+              See features
+            </a>
+          </div>
+
+          <div className="mx-auto mt-7 grid max-w-4xl gap-3 md:grid-cols-3">
+            <Pill icon={<FileText size={16} />} text="PDFs + photos" />
+            <Pill icon={<Timer size={16} />} text="Pomodoro daily flow" />
+            <Pill icon={<Sparkles size={16} />} text="Notes + tests" />
+          </div>
+        </section>
+
+        {/* HERO VISUAL + STATEMENT */}
+        <section className="mt-20">
+          <div className="text-center">
+            <h2 className="text-3xl md:text-4xl font-semibold tracking-tight text-white/85">
+              Structured, not chatty. Exam-ready output.
+            </h2>
+            <p className="mx-auto mt-3 max-w-3xl text-white/55">
+              You get a plan, summaries, and tests that stick to your material. No endless conversation.
+              PDFs, photos, even handwritten notes, if you can upload it, Examly can use it.
             </p>
+          </div>
 
-            <div className="mt-8 flex flex-col sm:flex-row gap-3">
-              <Link href="/login">
-                <Button className="w-full sm:w-auto gap-2">
-                  Log in <ArrowRight size={16} />
-                </Button>
-              </Link>
-
-              <Link
-                href="/guide"
-                className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-white/80 hover:text-white"
-              >
-                View guide
-              </Link>
-            </div>
-
-            <div className="mt-10 grid gap-3 sm:grid-cols-3">
-              <MiniStat icon={<FileUp size={16} />} label="PDFs + handwritten photos" />
-              <MiniStat icon={<Timer size={16} />} label="Pomodoro daily flow" />
-              <MiniStat icon={<Sparkles size={16} />} label="Notes + tests" />
-            </div>
-
-            {/* BIG HERO IMAGE under the main text */}
-            <div className="mt-10 w-full fade-edges rounded-2xl">
-              <Image src="/assets/hero.png" alt="Examly preview" width={1400} height={900} className="h-auto w-full" priority />
-            </div>
+          <div className="mt-10 fade-edges">
+            <Image
+              src="/assets/hero.png"
+              alt="Examly preview"
+              width={1600}
+              height={900}
+              className="h-auto w-full"
+              priority
+            />
           </div>
         </section>
 
         {/* FEATURES */}
-        <section id="features" className="mx-auto max-w-6xl px-0 pt-6">
-          <Feature
-            kicker="Notes"
-            title="Study notes that feel like a real notebook."
-            body="Examly transforms your material into clear sections, key points, examples, and what teachers love to ask."
-            img="/assets/feature-summary.png"
-          />
+        <div id="features" />
 
-          <Feature
-            kicker="Practice"
-            title="Practice tests from your own material."
-            body="Generate questions that match the exam style, with explanations so you actually learn from mistakes."
-            img="/assets/feature-test.png"
-            reverse
-          />
+        <Feature
+          tag="NOTES"
+          title="Study notes that feel like a real notebook."
+          desc="Examly transforms your material into clear sections, key points, examples, and what teachers love to ask. No endless chat. Just learnable notes."
+          img="/assets/feature-summary.png"
+        />
 
-          <Feature
-            kicker="Vocab"
-            title="Flashcards from word lists, instantly."
-            body="Paste a list or upload a photo. Examly turns it into cards you can learn from."
-            img="/assets/feature-vocab.png"
-          />
-        </section>
+        <Feature
+          tag="DAILY PLAN"
+          title="A daily plan you can actually follow."
+          desc="Start a session, focus, then take a break. Examly guides you with a progress bar and realistic blocks so you finish on time."
+          img="/assets/feature-plan.png"
+          reverse
+        />
 
-        {/* CTA */}
-        <section className="mt-10 rounded-3xl border border-white/10 bg-white/[0.03] p-6 md:p-10">
-          <div className="grid gap-8 md:grid-cols-2 md:items-center">
-            <div className="min-w-0">
-              <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pricing</div>
-              <h2 className="mt-3 text-2xl md:text-3xl font-semibold tracking-tight">
-                One plan. Simple credits.
-              </h2>
-              <p className="mt-3 text-white/70 max-w-[70ch]">
-                Pro gives you 30 generations. When credits run out, Examly can auto-recharge another 30 (best-effort).
-              </p>
+        <Feature
+          tag="VOCAB"
+          title="Quizlet-style vocab from text or photos."
+          desc="Paste up to 70 words (free) or upload a photo of your vocab sheet. Examly turns it into flashcards, learn mode, and timed tests (English ↔ Hungarian)."
+          img="/assets/feature-vocab.png"
+        />
+
+        <Feature
+          tag="PRACTICE"
+          title="Practice tests built from your content."
+          desc="Generate 15–20 questions (mixed MCQ + short answer) with solutions, so you can check what you really know."
+          img="/assets/feature-test.png"
+          reverse
+        />
+
+        {/* PRICING */}
+        <section className="mt-10">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-6 md:p-10">
+            <div className="grid items-center gap-6 md:grid-cols-2">
+              <div className="min-w-0">
+                <div className="text-xs uppercase tracking-[0.22em] text-white/50">PRICING</div>
+                <h3 className="mt-4 text-3xl md:text-4xl font-semibold tracking-tight">
+                  Pro credits. Buy when needed.
+                </h3>
+                <p className="mt-4 text-white/70 max-w-[70ch]">
+                  3500 Ft (≈ €8.9) for 30 generations. One-time purchase. When you run out, buy another pack.
+                </p>
+              </div>
+
+              <div className="flex md:justify-end">
+                <Link href="/billing">
+                  <Button className="gap-2 px-6">
+                    Buy Pro credits <ArrowRight size={16} />
+                  </Button>
+                </Link>
+              </div>
             </div>
+          </div>
 
-            <div className="rounded-2xl border border-white/10 bg-black/40 p-5">
-              <div className="text-sm font-semibold">Pro</div>
-              <div className="mt-1 text-sm text-white/70">30 generations • 3500 Ft (≈ €8.9)</div>
-              <ul className="mt-3 space-y-1 text-sm text-white/65">
-                <li>• Use credits on Plan, Practice, Vocab, Audio</li>
-                <li>• Auto-recharge may top up when you run out</li>
-              </ul>
+          <div className="mt-10 flex items-center justify-between text-xs text-white/50">
+            <div>© {new Date().getFullYear()} Examly</div>
+            <div className="flex gap-4">
+              <span>Privacy</span>
+              <span>Terms</span>
             </div>
           </div>
         </section>

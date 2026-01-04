@@ -185,7 +185,8 @@ async function callModel(
 export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
-    await consumeGeneration(user.id, 'plan')
+    await consumeGeneration(user.id)
+
 
     const form = await req.formData()
     const prompt = String(form.get('prompt') ?? '')

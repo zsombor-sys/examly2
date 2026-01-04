@@ -93,7 +93,8 @@ function Inner() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const [result, setResult] = useState<PlanResult | null>(null)
-  const [tab, setTab] = useState<'plan' | 'notes' | 'daily' | 'practice' | 'export'>('plan')
+  const [tab, setTab] = useState<'plan' | 'notes' | 'daily' | 'practice' | 'ask' | 'export'>('plan')
+
 
   // pomodoro
   const [blocks, setBlocks] = useState<Block[]>([])
@@ -337,8 +338,16 @@ function Inner() {
               </div>
 
               {/* Tabs: ONLY scroll when needed */}
-              <HScroll className="w-full lg:w-auto justify-start lg:justify-end -mx-1 px-1">
-                {(['plan', 'notes', 'daily', 'practice', 'export'] as const).map((k) => (
+             <HScroll
+  className="
+    w-full lg:w-auto
+    justify-start lg:justify-end
+    -mx-1 px-1
+    lg:max-w-[520px]
+  "
+>
+  {(['plan', 'notes', 'daily', 'practice', 'ask', 'export'] as const).map((k) => (
+
                   <Button
                     key={k}
                     variant={tab === k ? 'primary' : 'ghost'}
@@ -357,6 +366,26 @@ function Inner() {
                   Tip: add the exam date and your material (PDF / photo). The plan becomes much more accurate.
                 </div>
               )}
+              {!result && (
+  <div className="mt-6 grid gap-4 md:grid-cols-2">
+    <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+      <div className="text-xs uppercase tracking-[0.18em] text-white/55">What you get</div>
+      <ul className="mt-3 space-y-2 text-sm text-white/70">
+        <li>• A structured daily plan (not chat)</li>
+        <li>• Clean notes + quick summary</li>
+        <li>• Flashcards and practice questions</li>
+        <li>• Pomodoro blocks (focus + breaks)</li>
+      </ul>
+    </div>
+    <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+      <div className="text-xs uppercase tracking-[0.18em] text-white/55">Tip</div>
+      <p className="mt-3 text-sm text-white/70">
+        Add your exam date + upload at least 1 PDF/photo for best accuracy.
+      </p>
+    </div>
+  </div>
+)}
+
 
               {tab === 'plan' && result && (
                 <div className="grid gap-6 lg:grid-cols-[1fr_320px] min-w-0">
@@ -509,49 +538,28 @@ function Inner() {
               )}
 
               {tab === 'practice' && result && (
-                <div className="space-y-6 min-w-0">
-                  {result.practice_questions?.map((q, qi) => (
-                    <section key={q.id ?? qi} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
-                      <div className="flex items-start justify-between gap-3 min-w-0">
-                        <div className="text-sm font-semibold text-white/90 min-w-0 break-words">
-                          {qi + 1}. <InlineMath content={q.question} />
-                        </div>
-                        <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
-                          {q.type.toUpperCase()}
-                        </span>
-                      </div>
+  <div className="space-y-6 min-w-0">
+    {result.practice_questions?.map((q, qi) => (
+      <section key={q.id ?? qi} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+        ...
+      </section>
+    ))}
+  </div>
+)}
 
-                      {q.type === 'mcq' && q.options?.length ? (
-                        <div className="mt-4 grid gap-2">
-                          {q.options.map((o, i) => (
-                            <div key={i} className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white/80">
-                              <InlineMath content={o} />
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
+/* IDE JÖN AZ ASK */
+{tab === 'ask' && result && (
+  <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Ask</div>
+    <p className="mt-2 text-sm text-white/70">
+      This will be wired to the Ask feature (same credit rules). For now it’s a placeholder so the UI flow is correct.
+    </p>
 
-                      {q.answer ? (
-                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
-                          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Answer</div>
-                          <div className="mt-2 text-sm text-white/80 break-words">
-                            <InlineMath content={q.answer} />
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {q.explanation ? (
-                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
-                          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Explanation</div>
-                          <div className="mt-2 text-sm text-white/70">
-                            <MarkdownMath content={q.explanation} />
-                          </div>
-                        </div>
-                      ) : null}
-                    </section>
-                  ))}
-                </div>
-              )}
+    <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
+      Coming next: ask questions about your generated plan/notes with citations to your content.
+    </div>
+  </div>
+)}
 
               {tab === 'export' && result && (
                 <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">

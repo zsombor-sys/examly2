@@ -95,7 +95,6 @@ function Inner() {
   const [result, setResult] = useState<PlanResult | null>(null)
   const [tab, setTab] = useState<'plan' | 'notes' | 'daily' | 'practice' | 'ask' | 'export'>('plan')
 
-
   // pomodoro
   const [blocks, setBlocks] = useState<Block[]>([])
   const [blockIndex, setBlockIndex] = useState(0)
@@ -119,7 +118,6 @@ function Inner() {
   useEffect(() => {
     if (!running) return
     if (secondsLeft !== 0) return
-
     setRunning(false)
     setTimeout(() => {
       setBlockIndex((i) => {
@@ -192,7 +190,7 @@ function Inner() {
     setLoading(true)
     try {
       const form = new FormData()
-      form.append('prompt', prompt)
+      form.append('prompt', prompt || '') // allow empty prompt if file exists
       if (file) form.append('file', file)
 
       const res = await authedFetch('/api/plan', { method: 'POST', body: form })
@@ -232,8 +230,11 @@ function Inner() {
 
   const planTitle = result?.title ?? titleFromPrompt(prompt)
 
+  // Allow generation if: prompt long enough OR a file exists
+  const canGenerate = !loading && (prompt.trim().length >= 6 || !!file)
+
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10 overflow-x-hidden">
+    <div className="mx-auto max-w-6xl px-4 py-10">
       <div className="flex items-center justify-between">
         <Link href="/" className="inline-flex items-center gap-2 text-white/70 hover:text-white">
           <ArrowLeft size={18} />
@@ -305,7 +306,7 @@ function Inner() {
             />
           </label>
 
-          <Button className="mt-4 w-full" onClick={generate} disabled={loading || prompt.trim().length < 6}>
+          <Button className="mt-4 w-full" onClick={generate} disabled={!canGenerate}>
             {loading ? (
               <span className="inline-flex items-center gap-2">
                 <Loader2 className="animate-spin" size={16} />
@@ -321,9 +322,11 @@ function Inner() {
 
         {/* MAIN */}
         <div className="min-w-0">
-          <div className="rounded-3xl border border-white/10 bg-black/40 p-6 min-w-0">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between min-w-0">
-              <div className="min-w-0">
+          {/* Header card - IMPORTANT: overflow-hidden + min-w-0 so tabs don't push it wider */}
+          <div className="rounded-3xl border border-white/10 bg-black/40 p-6 min-w-0 overflow-hidden">
+            <div className="flex items-start gap-4 min-w-0">
+              {/* left: title */}
+              <div className="min-w-0 flex-1">
                 <div className="text-xs uppercase tracking-[0.18em] text-white/55">Plan</div>
                 <h1 className="mt-2 text-2xl md:text-3xl font-semibold tracking-tight text-white break-words">
                   {planTitle}
@@ -337,69 +340,61 @@ function Inner() {
                 )}
               </div>
 
-              {/* Tabs: ONLY scroll when needed */}
-             <HScroll
-  className="
-    w-full lg:w-auto
-    justify-start lg:justify-end
-    -mx-1 px-1
-    lg:max-w-[520px]
-  "
->
-  {(['plan', 'notes', 'daily', 'practice', 'ask', 'export'] as const).map((k) => (
-
-                  <Button
-                    key={k}
-                    variant={tab === k ? 'primary' : 'ghost'}
-                    onClick={() => setTab(k)}
-                    className="shrink-0 capitalize"
-                  >
-                    {k}
-                  </Button>
-                ))}
-              </HScroll>
+              {/* right: tabs (scroll ONLY if needed) */}
+              <div className="shrink-0 min-w-0">
+                <HScroll className="lg:max-w-[520px] -mx-1 px-1 justify-end">
+                  {(['plan', 'notes', 'daily', 'practice', 'ask', 'export'] as const).map((k) => (
+                    <Button
+                      key={k}
+                      variant={tab === k ? 'primary' : 'ghost'}
+                      onClick={() => setTab(k)}
+                      className="shrink-0 capitalize"
+                    >
+                      {k}
+                    </Button>
+                  ))}
+                </HScroll>
+              </div>
             </div>
 
-            <div className="mt-6 min-w-0">
-              {!result && (
-                <div className="text-sm text-white/55">
-                  Tip: add the exam date and your material (PDF / photo). The plan becomes much more accurate.
+            <div className="mt-3 text-sm text-white/55">
+              Tip: add the exam date and your material (PDF / photo). The plan becomes much more accurate.
+            </div>
+
+            {!result && (
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">What you get</div>
+                  <ul className="mt-3 space-y-2 text-sm text-white/70">
+                    <li>• A structured daily plan (not chat)</li>
+                    <li>• Clean notes + quick summary</li>
+                    <li>• Flashcards and practice questions</li>
+                    <li>• Pomodoro blocks (focus + breaks)</li>
+                  </ul>
                 </div>
-              )}
-              {!result && (
-  <div className="mt-6 grid gap-4 md:grid-cols-2">
-    <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
-      <div className="text-xs uppercase tracking-[0.18em] text-white/55">What you get</div>
-      <ul className="mt-3 space-y-2 text-sm text-white/70">
-        <li>• A structured daily plan (not chat)</li>
-        <li>• Clean notes + quick summary</li>
-        <li>• Flashcards and practice questions</li>
-        <li>• Pomodoro blocks (focus + breaks)</li>
-      </ul>
-    </div>
-    <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
-      <div className="text-xs uppercase tracking-[0.18em] text-white/55">Tip</div>
-      <p className="mt-3 text-sm text-white/70">
-        Add your exam date + upload at least 1 PDF/photo for best accuracy.
-      </p>
-    </div>
-  </div>
-)}
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Tip</div>
+                  <p className="mt-3 text-sm text-white/70">Add your exam date + upload at least 1 PDF/photo for best accuracy.</p>
+                </div>
+              </div>
+            )}
 
-
+            {/* Content */}
+            <div className="mt-6 min-w-0">
               {tab === 'plan' && result && (
                 <div className="grid gap-6 lg:grid-cols-[1fr_320px] min-w-0">
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Study notes</div>
-                    <div className="mt-3 min-w-0">
+                    {/* Allow horizontal scroll for long KaTeX / code-like lines, but don't blow the layout */}
+                    <div className="mt-3 min-w-0 max-w-full overflow-x-auto">
                       <MarkdownMath content={result.study_notes} />
                     </div>
                   </section>
 
-                  <aside className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+                  <aside className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
 
-                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 min-w-0">
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 min-w-0 overflow-hidden">
                       <div className="flex items-start justify-between gap-3 min-w-0">
                         <div className="min-w-0">
                           <div className="text-xs text-white/55">Session</div>
@@ -428,13 +423,9 @@ function Inner() {
                         ) : null}
                       </div>
 
-                      {/* Controls row: ONLY scroll when needed */}
+                      {/* Controls: scroll only if needed */}
                       <HScroll className="mt-4 -mx-1 px-1">
-                        <Button
-                          onClick={() => setRunning((v) => !v)}
-                          disabled={!activeBlock}
-                          className="shrink-0 gap-2"
-                        >
+                        <Button onClick={() => setRunning((v) => !v)} disabled={!activeBlock} className="shrink-0 gap-2">
                           {running ? <Pause size={16} /> : <Play size={16} />}
                           {running ? 'Pause' : 'Start'}
                         </Button>
@@ -473,14 +464,14 @@ function Inner() {
 
               {tab === 'notes' && result && (
                 <div className="grid gap-6 lg:grid-cols-2 min-w-0">
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Quick summary</div>
-                    <div className="mt-3 text-white/80 min-w-0">
+                    <div className="mt-3 text-white/80 min-w-0 max-w-full overflow-x-auto">
                       <MarkdownMath content={result.quick_summary} />
                     </div>
                   </section>
 
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Flashcards</div>
                     <div className="mt-3 grid gap-3">
                       {result.flashcards?.slice(0, 8).map((c, i) => (
@@ -502,7 +493,7 @@ function Inner() {
                   {result.daily_plan?.map((d, di) => {
                     const b = normalizeBlocks(d.blocks)
                     return (
-                      <section key={di} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+                      <section key={di} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                         <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
                           <div className="min-w-0">
                             <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
@@ -538,35 +529,66 @@ function Inner() {
               )}
 
               {tab === 'practice' && result && (
-  <div className="space-y-6 min-w-0">
-    {result.practice_questions?.map((q, qi) => (
-      <section key={q.id ?? qi} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
-        ...
-      </section>
-    ))}
-  </div>
-)}
+                <div className="space-y-6 min-w-0">
+                  {result.practice_questions?.map((q, qi) => (
+                    <section key={q.id ?? String(qi)} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
+                      <div className="flex items-start justify-between gap-3 min-w-0">
+                        <div className="text-sm font-semibold text-white/90 min-w-0 break-words">
+                          {qi + 1}. <InlineMath content={q.question} />
+                        </div>
+                        <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
+                          {q.type.toUpperCase()}
+                        </span>
+                      </div>
 
+                      {q.type === 'mcq' && q.options?.length ? (
+                        <div className="mt-4 grid gap-2">
+                          {q.options.map((o, i) => (
+                            <div key={i} className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white/80">
+                              <InlineMath content={o} />
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
 
-{tab === 'ask' && result && (
-  <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
-    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Ask</div>
-    <p className="mt-2 text-sm text-white/70">
-      This will be wired to the Ask feature (same credit rules). For now it’s a placeholder so the UI flow is correct.
-    </p>
+                      {q.answer ? (
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Answer</div>
+                          <div className="mt-2 text-sm text-white/80 break-words">
+                            <InlineMath content={q.answer} />
+                          </div>
+                        </div>
+                      ) : null}
 
-    <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
-      Coming next: ask questions about your generated plan/notes with citations to your content.
-    </div>
-  </div>
-)}
+                      {q.explanation ? (
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Explanation</div>
+                          <div className="mt-2 text-sm text-white/70 min-w-0 max-w-full overflow-x-auto">
+                            <MarkdownMath content={q.explanation} />
+                          </div>
+                        </div>
+                      ) : null}
+                    </section>
+                  ))}
+                </div>
+              )}
+
+              {tab === 'ask' && result && (
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
+                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Ask</div>
+                  <p className="mt-2 text-sm text-white/70">
+                    Ask questions about your generated plan/notes (same credit rules). This UI is ready, API can be wired next.
+                  </p>
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-white/70">
+                    Coming next: ask about the generated content with citations to your uploads.
+                  </div>
+                </div>
+              )}
 
               {tab === 'export' && result && (
-                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0">
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                   <div className="text-xs uppercase tracking-[0.18em] text-white/55">Export</div>
-                  <p className="mt-2 text-sm text-white/70">
-                    Download your plan or notes as a PDF.
-                  </p>
+                  <p className="mt-2 text-sm text-white/70">Download your plan or notes as a PDF.</p>
 
                   <HScroll className="mt-4 -mx-1 px-1">
                     <Button

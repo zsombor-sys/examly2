@@ -1,4 +1,3 @@
-
 'use client'
 
 import Image from 'next/image'
@@ -10,6 +9,7 @@ import InlineMath from '@/components/InlineMath'
 import { FileUp, Loader2, Trash2, Play, Pause, RotateCcw, ArrowLeft } from 'lucide-react'
 import AuthGate from '@/components/AuthGate'
 import { authedFetch } from '@/lib/authClient'
+import HScroll from '@/components/HScroll'
 
 type Block = { type: 'study' | 'break'; minutes: number; label: string }
 type DayPlan = { day: string; focus: string; tasks: string[]; minutes: number; blocks?: Block[] }
@@ -28,232 +28,194 @@ type PlanResult = {
     id: string
     type: 'mcq' | 'short'
     question: string
-    options: string[] | null
-    answer: string | null
+    options?: string[]
+    answer?: string
     explanation?: string
   }>
-  notes: string[]
 }
 
-type SavedPlan = {
-  id: string
-  createdAt: number
-  prompt: string
-  result: PlanResult
+type SavedPlan = { id: string; title: string; created_at: string }
+
+function fmtDate(d: string) {
+  try {
+    return new Date(d).toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return d
+  }
 }
 
-const STORAGE_KEY = 'examly:plans:v1'
-
-function nowId() {
-  return Math.random().toString(16).slice(2) + '-' + Date.now().toString(16)
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n))
 }
 
-function fmtDate(ts: number) {
-  const d = new Date(ts)
-  return d.toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+function splitBullets(text: string) {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  return lines.map((l) => l.replace(/^[-•]\s?/, ''))
 }
 
-function splitLines(s: string) {
-  return String(s ?? '').replace(/\r/g, '').split('\n')
+function titleFromPrompt(p: string) {
+  const t = p.trim().replace(/\s+/g, ' ')
+  if (!t) return 'Untitled plan'
+  return t.length > 60 ? t.slice(0, 60) + '…' : t
 }
 
-function ProgressBar({ value }: { value: number }) {
-  const v = Math.max(0, Math.min(1, value))
+function normalizeBlocks(blocks?: Block[]) {
+  if (!blocks?.length) return []
+  return blocks
+    .filter((b) => b && Number.isFinite(b.minutes))
+    .map((b) => ({
+      ...b,
+      minutes: clamp(Math.round(b.minutes), 1, 120),
+      label: (b.label || '').trim() || (b.type === 'break' ? 'Break' : 'Focus'),
+    }))
+}
+
+function totalMinutes(blocks: Block[]) {
+  return blocks.reduce((s, b) => s + (b.minutes || 0), 0)
+}
+
+function secondsToMMSS(s: number) {
+  const mm = Math.floor(s / 60)
+  const ss = s % 60
+  return `${mm}:${String(ss).padStart(2, '0')}`
+}
+
+export default function PlanPage() {
   return (
-    <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
-      <div className="h-full bg-white/80" style={{ width: `${v * 100}%` }} />
-    </div>
+    <AuthGate requireEntitlement={true}>
+      <Inner />
+    </AuthGate>
   )
 }
 
-function Pomodoro({ blocks }: { blocks: Block[] }) {
-  // Default blocks if missing
-  const seq = (blocks?.length ? blocks : [
-    { type: 'study', minutes: 25, label: 'Focus' },
-    { type: 'break', minutes: 5, label: 'Break' },
-    { type: 'study', minutes: 25, label: 'Focus' },
-    { type: 'break', minutes: 5, label: 'Break' },
-    { type: 'study', minutes: 25, label: 'Focus' },
-    { type: 'break', minutes: 5, label: 'Break' },
-    { type: 'study', minutes: 25, label: 'Focus' },
-    { type: 'break', minutes: 15, label: 'Long break' },
-  ]) as Block[]
-
-  const [running, setRunning] = useState(false)
-  const [idx, setIdx] = useState(0)
-  const [left, setLeft] = useState(seq[0].minutes * 60)
-  const raf = useRef<number | null>(null)
-  const last = useRef<number | null>(null)
-
-  const current = seq[idx] ?? seq[0]
-  const total = current.minutes * 60
-  const progress = total ? 1 - left / total : 0
-
-  useEffect(() => {
-    // reset left when block changes
-    setLeft((seq[idx]?.minutes ?? 25) * 60)
-  }, [idx])
-
-  useEffect(() => {
-    if (!running) {
-      if (raf.current) cancelAnimationFrame(raf.current)
-      raf.current = null
-      last.current = null
-      return
-    }
-
-    const tick = (t: number) => {
-      if (!last.current) last.current = t
-      const dt = (t - last.current) / 1000
-      last.current = t
-
-      setLeft((s) => {
-        const next = Math.max(0, s - dt)
-        if (next === 0) {
-          // advance
-          setIdx((i) => (i + 1) % seq.length)
-          return 0
-        }
-        return next
-      })
-
-      raf.current = requestAnimationFrame(tick)
-    }
-
-    raf.current = requestAnimationFrame(tick)
-    return () => {
-      if (raf.current) cancelAnimationFrame(raf.current)
-    }
-  }, [running, seq.length])
-
-  const mm = Math.floor(left / 60)
-  const ss = Math.floor(left % 60)
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Session</div>
-          <div className="mt-1 text-xl font-semibold">{current.label}</div>
-          <div className="mt-1 text-sm text-white/65">{current.type === 'study' ? 'Focus time' : 'Break time'}</div>
-        </div>
-
-        <div className="text-right">
-          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Timer</div>
-          <div className="mt-1 font-mono tabular-nums text-3xl leading-none">{String(mm).padStart(2,'0')}:{String(ss).padStart(2,'0')}</div>
-        </div>
-      </div>
-
-      <ProgressBar value={progress} />
-
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={() => setRunning((r) => !r)} className="gap-2">
-          {running ? <><Pause size={16} /> Pause</> : <><Play size={16} /> Start</>}
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => {
-            setRunning(false)
-            setIdx(0)
-            setLeft(seq[0].minutes * 60)
-          }}
-          className="gap-2"
-        >
-          <RotateCcw size={16} /> Reset
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => setIdx((i) => (i + 1) % seq.length)}
-          className="gap-2"
-        >
-          Next
-        </Button>
-      </div>
-
-      <div className="text-xs text-white/50">
-        Block {idx + 1}/{seq.length}
-      </div>
-    </div>
-  )
-}
-
-function PlanPageInner() {
-  const [tab, setTab] = useState<'plan' | 'notes' | 'daily' | 'practice' | 'export' | 'ask'>('plan')
-
+function Inner() {
   const [prompt, setPrompt] = useState('')
-  const [files, setFiles] = useState<File[]>([])
+  const [file, setFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const [saved, setSaved] = useState<SavedPlan[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
   const [result, setResult] = useState<PlanResult | null>(null)
+  const [tab, setTab] = useState<'plan' | 'notes' | 'daily' | 'practice' | 'export'>('plan')
 
-  // Ask (mini tutor) + audio
-  const [askLang, setAskLang] = useState<'hu' | 'en'>('hu')
-  const [askQ, setAskQ] = useState('')
-  const [askLoading, setAskLoading] = useState(false)
-  const [askError, setAskError] = useState<string | null>(null)
-  const [askDisplay, setAskDisplay] = useState('')
-  const [askSpeech, setAskSpeech] = useState('')
-  const [audioLoading, setAudioLoading] = useState(false)
-  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  // pomodoro
+  const [blocks, setBlocks] = useState<Block[]>([])
+  const [blockIndex, setBlockIndex] = useState(0)
+  const [running, setRunning] = useState(false)
+  const [secondsLeft, setSecondsLeft] = useState(25 * 60)
+  const tickRef = useRef<number | null>(null)
 
-  const [history, setHistory] = useState<SavedPlan[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const activeBlock = useMemo(() => blocks[blockIndex] ?? null, [blocks, blockIndex])
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return
-      const data = JSON.parse(raw)
-      if (Array.isArray(data)) {
-        setHistory(data)
-        if (data[0]?.id) {
-          setActiveId(data[0].id)
-          setResult(data[0].result)
-          setPrompt(data[0].prompt ?? '')
-        }
-      }
-    } catch {}
-  }, [])
+    if (!running) return
+    tickRef.current = window.setInterval(() => {
+      setSecondsLeft((s) => {
+        if (s <= 1) return 0
+        return s - 1
+      })
+    }, 1000)
+    return () => {
+      if (tickRef.current) window.clearInterval(tickRef.current)
+      tickRef.current = null
+    }
+  }, [running])
 
-  function saveHistory(next: SavedPlan[]) {
-    setHistory(next)
+  useEffect(() => {
+    if (!running) return
+    if (secondsLeft !== 0) return
+
+    // auto-next
+    setRunning(false)
+    setTimeout(() => {
+      setBlockIndex((i) => {
+        const next = i + 1
+        if (next >= blocks.length) return i
+        return next
+      })
+    }, 150)
+  }, [secondsLeft, running, blocks.length])
+
+  useEffect(() => {
+    // when block changes, reset timer to that block
+    if (!activeBlock) return
+    setSecondsLeft(activeBlock.minutes * 60)
+    setRunning(false)
+  }, [blockIndex]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadHistory() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next.slice(0, 30)))
-    } catch {}
+      const res = await authedFetch('/api/plan/history')
+      const json = await res.json()
+      if (!res.ok) return
+      setSaved(Array.isArray(json?.items) ? json.items : [])
+    } catch {
+      // ignore
+    }
   }
 
-  const hasUploads = files.length > 0
-  const uploadLabel = useMemo(() => {
-    if (!hasUploads) return 'Upload PDFs or photos (handwritten supported).'
-    return `${files.length} file(s) ready.`
-  }, [hasUploads, files.length])
+  useEffect(() => {
+    loadHistory()
+  }, [])
 
-  async function runPlan() {
-    setLoading(true)
+  async function loadPlan(id: string) {
     setError(null)
+    try {
+      const res = await authedFetch(`/api/plan?id=${encodeURIComponent(id)}`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error ?? 'Failed to load')
+      setSelectedId(id)
+      setResult(json?.result ?? null)
+      const b = normalizeBlocks(json?.result?.daily_plan?.[0]?.blocks ?? [])
+      setBlocks(b)
+      setBlockIndex(0)
+      setRunning(false)
+      if (b[0]) setSecondsLeft(b[0].minutes * 60)
+      setTab('plan')
+    } catch (e: any) {
+      setError(e?.message ?? 'Error')
+    }
+  }
 
+  function resetAll() {
+    setPrompt('')
+    setFile(null)
+    setResult(null)
+    setSelectedId(null)
+    setTab('plan')
+    setBlocks([])
+    setBlockIndex(0)
+    setRunning(false)
+    setSecondsLeft(25 * 60)
+    setError(null)
+  }
+
+  async function generate() {
+    setError(null)
+    setLoading(true)
     try {
       const form = new FormData()
       form.append('prompt', prompt)
-      files.forEach((f) => form.append('files', f))
+      if (file) form.append('file', file)
 
       const res = await authedFetch('/api/plan', { method: 'POST', body: form })
       const json = await res.json()
+      if (!res.ok) throw new Error(json?.error ?? 'Generation failed')
 
-      if (!res.ok) throw new Error(json?.error ?? 'Request failed')
-
-      setResult(json)
+      const r = json?.result as PlanResult
+      setResult(r)
       setTab('plan')
 
-      const item: SavedPlan = {
-        id: nowId(),
-        createdAt: Date.now(),
-        prompt,
-        result: json,
-      }
-      const next = [item, ...history].slice(0, 30)
-      setActiveId(item.id)
-      saveHistory(next)
+      // seed pomodoro from day 1 blocks if present
+      const b = normalizeBlocks(r?.daily_plan?.[0]?.blocks ?? [])
+      setBlocks(b)
+      setBlockIndex(0)
+      setRunning(false)
+      if (b[0]) setSecondsLeft(b[0].minutes * 60)
+
+      await loadHistory()
     } catch (e: any) {
       setError(e?.message ?? 'Error')
     } finally {
@@ -261,195 +223,131 @@ function PlanPageInner() {
     }
   }
 
-  async function runAsk() {
-    setAskError(null)
-    setAskLoading(true)
-    setAskDisplay('')
-    setAskSpeech('')
-    setAudioUrl(null)
-
-    try {
-      const res = await authedFetch('/api/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: askQ, language: askLang }),
-      })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json?.error ?? 'Request failed')
-      setAskDisplay(String(json?.display ?? ''))
-      setAskSpeech(String(json?.speech ?? ''))
-    } catch (e: any) {
-      setAskError(e?.message ?? 'Error')
-    } finally {
-      setAskLoading(false)
-    }
-  }
-
-  async function genAudio() {
-    setAskError(null)
-    const text = (askSpeech || askDisplay).trim()
-    if (!text) {
-      setAskError('Nothing to read yet. Ask a question first.')
-      return
-    }
-    setAudioLoading(true)
-    setAudioUrl(null)
-    try {
-      const res = await authedFetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, format: 'mp3' }),
-      })
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}))
-        throw new Error(j?.error ?? 'TTS failed')
-      }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      setAudioUrl(url)
-    } catch (e: any) {
-      setAskError(e?.message ?? 'Audio error')
-    } finally {
-      setAudioLoading(false)
-    }
-  }
-
-  function loadSaved(id: string) {
-    const found = history.find((h) => h.id === id)
-    if (!found) return
-    setActiveId(found.id)
-    setPrompt(found.prompt)
-    setResult(found.result)
+  async function clearHistory() {
     setError(null)
+    try {
+      const res = await authedFetch('/api/plan/history', { method: 'DELETE' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error ?? 'Failed')
+      setSaved([])
+      setSelectedId(null)
+    } catch (e: any) {
+      setError(e?.message ?? 'Error')
+    }
   }
 
-  function clearAll() {
-    setHistory([])
-    setActiveId(null)
-    setResult(null)
-    try { localStorage.removeItem(STORAGE_KEY) } catch {}
-  }
-
-  const todayBlocks = result?.daily_plan?.[0]?.blocks ?? []
+  const planTitle = result?.title ?? titleFromPrompt(prompt)
 
   return (
-    <div className="relative min-h-[calc(100vh-0px)]">
-      <div className="grid-overlay" />
-      <div className="glow" />
+    <div className="mx-auto max-w-6xl px-4 py-10">
+      <div className="flex items-center justify-between">
+        <Link href="/" className="inline-flex items-center gap-2 text-white/70 hover:text-white">
+          <ArrowLeft size={18} />
+          Back
+        </Link>
 
-      <div className="mx-auto max-w-7xl px-4 py-6">
-        <div className="flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-3">
-            <Image src="/assets/logo.png" alt="Examly" width={34} height={34} />
-            <span className="text-base font-semibold tracking-tight">Examly</span>
-          </Link>
-          <Link href="/" className="text-sm text-white/70 hover:text-white inline-flex items-center gap-2">
-            <ArrowLeft size={16} /> Back
-          </Link>
+        <div className="text-xs text-white/50">
+          {result?.language ? (
+            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">
+              {result.language}
+            </span>
+          ) : null}
         </div>
+      </div>
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-[320px_1fr]">
-          {/* Sidebar */}
-          <aside className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-            <div className="text-xs uppercase tracking-[0.18em] text-white/55">History</div>
-            <div className="mt-3 space-y-2 max-h-[58vh] overflow-auto pr-1">
-              {history.length === 0 && (
-                <div className="text-sm text-white/55">No saved plans yet.</div>
-              )}
-              {history.map((h) => (
+      <div className="mt-8 grid gap-6 lg:grid-cols-[360px_1fr]">
+        {/* LEFT SIDEBAR */}
+        <div className="rounded-3xl border border-white/10 bg-black/40 p-5">
+          <div className="text-xs uppercase tracking-[0.18em] text-white/55">History</div>
+          <div className="mt-3 space-y-2">
+            {saved.length === 0 ? (
+              <div className="text-sm text-white/50">No saved plans yet.</div>
+            ) : (
+              saved.map((p) => (
                 <button
-                  key={h.id}
-                  onClick={() => loadSaved(h.id)}
+                  key={p.id}
+                  onClick={() => loadPlan(p.id)}
                   className={
-                    'w-full text-left rounded-xl px-3 py-2 border ' +
-                    (activeId === h.id ? 'border-white/20 bg-white/[0.06]' : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04]')
+                    'w-full rounded-2xl border px-3 py-2 text-left transition ' +
+                    (selectedId === p.id
+                      ? 'border-white/20 bg-white/10'
+                      : 'border-white/10 bg-white/5 hover:bg-white/10')
                   }
                 >
-                  <div className="text-sm font-medium truncate">{h.result?.title || 'Untitled plan'}</div>
-                  <div className="text-xs text-white/55 mt-1">{fmtDate(h.createdAt)}</div>
+                  <div className="text-sm font-medium text-white/90 line-clamp-1">{p.title}</div>
+                  <div className="mt-0.5 text-xs text-white/50">{fmtDate(p.created_at)}</div>
                 </button>
-              ))}
-            </div>
+              ))
+            )}
+          </div>
 
-            <div className="mt-4 flex gap-2">
-              <Button
-                className="gap-2 flex-1"
-                onClick={() => {
-                  setResult(null)
-                  setActiveId(null)
-                  setPrompt('')
-                  setFiles([])
-                  setError(null)
-                }}
-              >
-                New
-              </Button>
-              <Button variant="ghost" onClick={clearAll} className="gap-2">
-                <Trash2 size={16} /> Clear
-              </Button>
-            </div>
+          <div className="mt-4 flex items-center gap-2">
+            <Button className="flex-1" onClick={resetAll} variant="primary">
+              New
+            </Button>
+            <Button onClick={clearHistory} variant="ghost" className="gap-2">
+              <Trash2 size={16} /> Clear
+            </Button>
+          </div>
 
-            <div className="mt-5 rounded-xl border border-white/10 bg-black/40 p-3">
-              <div className="text-xs uppercase tracking-[0.18em] text-white/55">Input</div>
+          <div className="mt-6 text-xs uppercase tracking-[0.18em] text-white/55">Input</div>
+          <Textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="What’s your exam about? When is it? What material do you have?"
+            className="mt-3 min-h-[110px]"
+          />
 
-              <Textarea
-                className="mt-2 min-h-[120px]"
-                placeholder="Describe your exam: topic, date, what matters most. (Hungarian is OK)"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-              />
+          <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70 hover:bg-white/10">
+            <span className="inline-flex items-center gap-2">
+              <FileUp size={16} />
+              Upload PDFs or photos (handwritten supported).
+            </span>
+            <input
+              type="file"
+              className="hidden"
+              accept="application/pdf,image/*"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
 
-              <label className="mt-3 flex cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 text-sm text-white/75 hover:bg-white/[0.04]">
-                <FileUp size={16} />
-                <span className="flex-1">{uploadLabel}</span>
-                <input
-                  type="file"
-                  className="hidden"
-                  multiple
-                  accept="image/*,application/pdf"
-                  onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
-                />
-              </label>
+          <Button className="mt-4 w-full" onClick={generate} disabled={loading || prompt.trim().length < 6}>
+            {loading ? (
+              <span className="inline-flex items-center gap-2">
+                <Loader2 className="animate-spin" size={16} />
+                Generating…
+              </span>
+            ) : (
+              'Generate'
+            )}
+          </Button>
 
-              {hasUploads && (
-                <div className="mt-2 text-xs text-white/55">
-                  {files.map((f) => f.name).slice(0, 4).join(', ')}{files.length > 4 ? '…' : ''}
-                </div>
-              )}
+          {error ? <div className="mt-3 text-sm text-red-400">{error}</div> : null}
+        </div>
 
-              <Button
-                onClick={runPlan}
-                disabled={loading || (!prompt.trim() && files.length === 0)}
-                className="mt-3 w-full gap-2"
-              >
-                {loading ? <><Loader2 className="animate-spin" size={16} /> Generating…</> : 'Generate'}
-              </Button>
-
-              {error && (
-                <div className="mt-3 text-sm text-red-300">
-                  {error}
-                </div>
-              )}
-            </div>
-          </aside>
-
-          {/* Main */}
-          <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 md:p-6">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
+        {/* MAIN */}
+        <div className="min-w-0">
+          <div className="rounded-3xl border border-white/10 bg-black/40 p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
                 <div className="text-xs uppercase tracking-[0.18em] text-white/55">Plan</div>
-                <div className="mt-1 text-2xl font-semibold tracking-tight">
-                  {result?.title || 'Create a plan'}
-                </div>
-                {result?.quick_summary && (
-                  <div className="mt-2 text-sm text-white/65 max-w-[70ch]">
+                <h1 className="mt-2 text-2xl md:text-3xl font-semibold tracking-tight text-white">
+                  {planTitle}
+                </h1>
+                {result?.quick_summary ? (
+                  <p className="mt-2 max-w-[80ch] text-sm text-white/70">
                     {result.quick_summary}
-                  </div>
+                  </p>
+                ) : (
+                  <p className="mt-2 max-w-[80ch] text-sm text-white/50">
+                    Generate a plan to see your schedule, notes, flashcards, and practice questions.
+                  </p>
                 )}
               </div>
 
-              <div className="-mx-1 flex gap-2 overflow-x-auto px-1 no-scrollbar">
-                {(['plan','notes','daily','practice','ask','export'] as const).map((k) => (
+              {/* Tabs: only scroll if needed */}
+              <HScroll className="-mx-1 px-1 gap-2">
+                {(['plan', 'notes', 'daily', 'practice', 'export'] as const).map((k) => (
                   <Button
                     key={k}
                     variant={tab === k ? 'primary' : 'ghost'}
@@ -459,197 +357,220 @@ function PlanPageInner() {
                     {k}
                   </Button>
                 ))}
-              </div>
+              </HScroll>
             </div>
 
             <div className="mt-6">
               {!result && (
-                <div className="text-white/60">
-                  Upload your material, describe your exam, then hit <span className="text-white">Generate</span>.
+                <div className="text-sm text-white/55">
+                  Tip: add the exam date and your material (PDF / photo). The plan becomes much more accurate.
                 </div>
               )}
 
-              {result && tab === 'plan' && (
-                <div className="space-y-4">
-                  {result.daily_plan.map((d, i) => (
-                    <div key={i} className="rounded-2xl border border-white/10 bg-black/40 p-5">
-                      <div className="flex flex-col gap-2 md:flex-row md:items-baseline md:justify-between">
-                        <div className="text-lg font-semibold">{d.day}</div>
-                        <div className="text-sm text-white/60"><InlineMath content={d.focus} /> • {d.minutes} min</div>
-                      </div>
-                      <ul className="mt-3 space-y-2 text-sm text-white/75">
-                        {d.tasks.map((t, idx) => (
-                          <li key={idx} className="flex gap-2">
-                            <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-white/70" />
-                            <span className="flex-1"><InlineMath content={t} /></span>
-                          </li>
-                        ))}
-                      </ul>
-                      {Array.isArray(d.blocks) && d.blocks.length > 0 && (
-                        <div className="mt-4 text-xs text-white/55">
-                          {d.blocks.map((b, j) => (
-                            <span key={j} className="mr-2 inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-1">
-                              {b.type === 'study' ? 'Focus' : 'Break'} {b.minutes}m
-                            </span>
-                          ))}
+              {tab === 'plan' && result && (
+                <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Study notes</div>
+                    <div className="mt-3">
+                      <MarkdownMath content={result.study_notes} />
+                    </div>
+                  </section>
+
+                  <aside className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
+
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-xs text-white/55">Session</div>
+                          <div className="mt-1 text-lg font-semibold leading-snug text-white break-words">
+                            {activeBlock ? activeBlock.label : 'No blocks'}
+                          </div>
+                          <div className="mt-1 text-sm text-white/60">Focus time</div>
                         </div>
+                        <div className="text-right">
+                          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Timer</div>
+                          <div className="mt-1 text-3xl font-semibold tabular-nums text-white">
+                            {secondsToMMSS(secondsLeft)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/5">
+                        {activeBlock ? (
+                          <div
+                            className="h-full bg-white/50"
+                            style={{
+                              width: `${activeBlock.minutes > 0 ? 100 - (secondsLeft / (activeBlock.minutes * 60)) * 100 : 0}%`,
+                            }}
+                          />
+                        ) : null}
+                      </div>
+
+                      {/* Pomodoro controls: scroll only if needed */}
+                      <HScroll className="mt-4 gap-2">
+                        <Button
+                          onClick={() => setRunning((v) => !v)}
+                          disabled={!activeBlock}
+                          className="shrink-0 gap-2"
+                        >
+                          {running ? <Pause size={16} /> : <Play size={16} />}
+                          {running ? 'Pause' : 'Start'}
+                        </Button>
+
+                        <Button
+                          variant="ghost"
+                          onClick={() => {
+                            if (!activeBlock) return
+                            setRunning(false)
+                            setSecondsLeft(activeBlock.minutes * 60)
+                          }}
+                          className="shrink-0 gap-2"
+                          disabled={!activeBlock}
+                        >
+                          <RotateCcw size={16} />
+                          Reset
+                        </Button>
+
+                        <Button
+                          variant="ghost"
+                          onClick={() => setBlockIndex((i) => Math.min(i + 1, Math.max(0, blocks.length - 1)))}
+                          className="shrink-0"
+                          disabled={blocks.length === 0 || blockIndex >= blocks.length - 1}
+                        >
+                          Next
+                        </Button>
+                      </HScroll>
+
+                      <div className="mt-3 text-xs text-white/50">
+                        Block {blocks.length ? blockIndex + 1 : 0}/{blocks.length || 0}
+                      </div>
+                    </div>
+                  </aside>
+                </div>
+              )}
+
+              {tab === 'notes' && result && (
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Quick summary</div>
+                    <div className="mt-3 text-white/80">
+                      <MarkdownMath content={result.quick_summary} />
+                    </div>
+                  </section>
+
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Flashcards</div>
+                    <div className="mt-3 grid gap-3">
+                      {result.flashcards?.slice(0, 8).map((c, i) => (
+                        <div key={i} className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-sm font-semibold text-white/90 break-words">{c.front}</div>
+                          <div className="mt-2 text-sm text-white/70 break-words">{c.back}</div>
+                        </div>
+                      ))}
+                      {(!result.flashcards || result.flashcards.length === 0) && (
+                        <div className="text-sm text-white/55">No flashcards generated.</div>
                       )}
                     </div>
+                  </section>
+                </div>
+              )}
+
+              {tab === 'daily' && result && (
+                <div className="space-y-6">
+                  {result.daily_plan?.map((d, di) => {
+                    const b = normalizeBlocks(d.blocks)
+                    return (
+                      <section key={di} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                          <div className="min-w-0">
+                            <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
+                            <div className="mt-2 text-xl font-semibold text-white break-words">{d.focus}</div>
+                          </div>
+
+                          {/* block chips scroll if needed */}
+                          {b.length ? (
+                            <HScroll className="gap-2">
+                              {b.map((x, i) => (
+                                <span
+                                  key={i}
+                                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70"
+                                >
+                                  {x.label} {x.minutes}m
+                                </span>
+                              ))}
+                            </HScroll>
+                          ) : null}
+                        </div>
+
+                        <ul className="mt-4 space-y-2 text-sm text-white/80">
+                          {d.tasks?.map((t, i) => (
+                            <li key={i} className="flex gap-2">
+                              <span className="text-white/40">•</span>
+                              <span className="break-words">{t}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    )
+                  })}
+                </div>
+              )}
+
+              {tab === 'practice' && result && (
+                <div className="space-y-6">
+                  {result.practice_questions?.map((q, qi) => (
+                    <section key={q.id ?? qi} className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="text-sm font-semibold text-white/90">
+                          {qi + 1}. <InlineMath content={q.question} />
+                        </div>
+                        <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
+                          {q.type.toUpperCase()}
+                        </span>
+                      </div>
+
+                      {q.type === 'mcq' && q.options?.length ? (
+                        <div className="mt-4 grid gap-2">
+                          {q.options.map((o, i) => (
+                            <div key={i} className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white/80">
+                              <InlineMath content={o} />
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      {q.answer ? (
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Answer</div>
+                          <div className="mt-2 text-sm text-white/80 break-words">
+                            <InlineMath content={q.answer} />
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {q.explanation ? (
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Explanation</div>
+                          <div className="mt-2 text-sm text-white/70">
+                            <MarkdownMath content={q.explanation} />
+                          </div>
+                        </div>
+                      ) : null}
+                    </section>
                   ))}
                 </div>
               )}
 
-              {result && tab === 'notes' && (
-                <div className="rounded-2xl border border-white/10 bg-black/40 p-5 max-h-[62vh] overflow-auto">
-                  <MarkdownMath content={result.study_notes || 'No notes generated.'} />
+              {tab === 'export' && result && (
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Export</div>
+                  <p className="mt-2 text-sm text-white/70">
+                    Download your plan or notes as a PDF. (If your bank required confirmation for Pro, Billing will show it.)
+                  </p>
 
-                  {result.flashcards?.length ? (
-                    <div className="mt-6">
-                      <div className="text-xs uppercase tracking-[0.18em] text-white/55">Flashcards</div>
-                      <div className="mt-3 grid gap-3 md:grid-cols-2">
-                        {result.flashcards.slice(0, 10).map((c, i) => (
-                          <div key={i} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                            <div className="text-sm font-semibold">
-                              <MarkdownMath content={String(c.front ?? '')} />
-                            </div>
-                            <div className="mt-2 text-sm text-white/70">
-                              <MarkdownMath content={String(c.back ?? '')} />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              )}
-
-              {result && tab === 'daily' && (
-                <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
-                  <div className="rounded-2xl border border-white/10 bg-black/40 p-5">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Today</div>
-                    <div className="mt-2 text-lg font-semibold"><InlineMath content={result.daily_plan?.[0]?.focus || 'Focus session'} /></div>
-                    <ul className="mt-3 space-y-2 text-sm text-white/75">
-                      {(result.daily_plan?.[0]?.tasks ?? []).map((t, i) => (
-                        <li key={i} className="flex gap-2">
-                          <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-white/70" />
-                          <span className="flex-1"><InlineMath content={t} /></span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-black/40 p-5">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
-                    <div className="mt-4">
-                      <Pomodoro blocks={todayBlocks as Block[]} />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {result && tab === 'practice' && (
-                <div className="rounded-2xl border border-white/10 bg-black/40 p-5 max-h-[68vh] overflow-auto">
-                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Practice questions</div>
-                  <div className="mt-3 space-y-5">
-                    {result.practice_questions.slice(0, 20).map((q, i) => (
-                      <div key={q.id || i} className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-                        <div className="text-sm font-semibold">{i + 1}.</div>
-                        <div className="mt-1">
-                          <MarkdownMath content={q.question} />
-                        </div>
-                        {q.type === 'mcq' && q.options?.length ? (
-                          <ul className="mt-2 space-y-1 text-sm text-white/75">
-                            {q.options.map((o, idx) => (
-                              <li key={idx} className="flex gap-2"><span>•</span><span className="flex-1"><MarkdownMath content={o} /></span></li>
-                            ))}
-                          </ul>
-                        ) : null}
-                        <div className="mt-3 text-sm text-white/70">
-                          <span className="text-white/50">Answer:</span>
-                          <div className="mt-1"><MarkdownMath content={q.answer || "—"} /></div>
-                        </div>
-                        {q.explanation ? (
-                          <div className="mt-2 text-xs text-white/55"><MarkdownMath content={q.explanation} /></div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {tab === 'ask' && (
-                <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
-                  <div className="rounded-2xl border border-white/10 bg-black/40 p-5">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Ask Examly</div>
-                    <p className="mt-2 text-sm text-white/65">
-                      Ask anything about the topic. Math will render nicely, and you can generate a short audio explanation.
-                    </p>
-
-                    <div className="mt-4 flex items-center gap-2">
-                      <label className="text-xs text-white/60">Language</label>
-                      <select
-                        value={askLang}
-                        onChange={(e) => setAskLang(e.target.value as 'hu' | 'en')}
-                        className="rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white/80"
-                      >
-                        <option value="hu">Hungarian</option>
-                        <option value="en">English</option>
-                      </select>
-                    </div>
-
-                    <Textarea
-                      className="mt-3 min-h-[160px]"
-                      placeholder={askLang === 'hu' ? 'Írd ide a kérdésed… (pl. oldd meg, magyarázd el lépésenként)' : 'Type your question… (step-by-step please)'}
-                      value={askQ}
-                      onChange={(e) => setAskQ(e.target.value)}
-                    />
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <Button onClick={runAsk} disabled={askLoading || !askQ.trim()} className="gap-2">
-                        {askLoading ? <><Loader2 className="animate-spin" size={16} /> Thinking…</> : 'Answer'}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        onClick={genAudio}
-                        disabled={audioLoading || (!askSpeech.trim() && !askDisplay.trim())}
-                        className="gap-2"
-                      >
-                        {audioLoading ? <><Loader2 className="animate-spin" size={16} /> Generating audio…</> : 'Generate audio'}
-                      </Button>
-                    </div>
-
-                    <div className="mt-3 text-xs text-white/50">
-                      Free: 2 audio / 48h. Admin: unlimited.
-                    </div>
-
-                    {askError && <div className="mt-3 text-sm text-red-300">{askError}</div>}
-
-                    {audioUrl && (
-                      <div className="mt-4">
-                        <audio controls src={audioUrl} className="w-full" />
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-black/40 p-5 max-h-[68vh] overflow-auto">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Answer</div>
-                    {!askDisplay ? (
-                      <p className="mt-3 text-sm text-white/60">Ask a question to see the explanation here.</p>
-                    ) : (
-                      <div className="mt-3">
-                        <MarkdownMath content={askDisplay} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {result && tab === 'export' && (
-                <div className="rounded-2xl border border-white/10 bg-black/40 p-5 space-y-4">
-                  <div className="text-sm text-white/70">
-                    Export your notes as a PDF for offline study.
-                  </div>
-                  <div className="-mx-1 flex gap-2 overflow-x-auto px-1 no-scrollbar">
+                  {/* export buttons row: scroll if needed */}
+                  <HScroll className="-mx-1 mt-4 px-1 gap-2">
                     <Button
                       onClick={async () => {
                         try {
@@ -658,63 +579,107 @@ function PlanPageInner() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ result }),
                           })
-                          if (!res.ok) throw new Error('PDF export failed')
                           const blob = await res.blob()
                           const url = URL.createObjectURL(blob)
                           const a = document.createElement('a')
-                          const safeTitle = String(result.title || 'examly-notes')
-                            .toLowerCase()
-                            .replace(/[^a-z0-9]+/g, '-')
-                            .replace(/(^-|-$)/g, '')
                           a.href = url
-                          a.download = `${safeTitle || 'examly-notes'}.pdf`
-                          document.body.appendChild(a)
+                          a.download = `${planTitle.replace(/[^\w\d-_ ]+/g, '').slice(0, 80)}.pdf`
                           a.click()
-                          a.remove()
                           URL.revokeObjectURL(url)
-                        } catch (e) {
-                          // handled by existing UI; keep quiet here
+                        } catch {
+                          setError('Export failed.')
                         }
                       }}
+                      className="shrink-0"
                     >
                       Download PDF
                     </Button>
-                    
+
                     <Button
                       variant="ghost"
-                      onClick={() => {
-                        const raw = JSON.stringify(result, null, 2)
-                        navigator.clipboard.writeText(raw).catch(() => {})
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(JSON.stringify(result, null, 2))
+                        } catch {
+                          // ignore
+                        }
                       }}
+                      className="shrink-0"
                     >
                       Copy JSON
                     </Button>
-                  </div>
 
-                  {result.notes?.length ? (
-                    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-                      <div className="text-xs uppercase tracking-[0.18em] text-white/55">Notes</div>
-                      <ul className="mt-2 space-y-1 text-sm text-white/70">
-                        {result.notes.slice(0, 8).map((n, i) => <li key={i}>• {n}</li>)}
-                      </ul>
-                    </div>
-                  ) : null}
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        const md =
+                          `# ${planTitle}\n\n` +
+                          `## Quick summary\n${result.quick_summary}\n\n` +
+                          `## Study notes\n${result.study_notes}\n\n` +
+                          `## Daily plan\n` +
+                          result.daily_plan
+                            .map((d) => `### ${d.day}\n**${d.focus}**\n\n${d.tasks.map((t) => `- ${t}`).join('\n')}\n`)
+                            .join('\n') +
+                          `\n\n## Flashcards\n` +
+                          (result.flashcards ?? []).map((c) => `- **${c.front}**: ${c.back}`).join('\n') +
+                          `\n\n## Practice\n` +
+                          (result.practice_questions ?? [])
+                            .map((q, i) => `### ${i + 1}. ${q.question}\n${q.options?.length ? q.options.map((o) => `- ${o}`).join('\n') + '\n' : ''}\n**Answer:** ${q.answer ?? ''}\n`)
+                            .join('\n')
+                        const blob = new Blob([md], { type: 'text/markdown' })
+                        const url = URL.createObjectURL(blob)
+                        const a = document.createElement('a')
+                        a.href = url
+                        a.download = `${planTitle.replace(/[^\w\d-_ ]+/g, '').slice(0, 80)}.md`
+                        a.click()
+                        URL.revokeObjectURL(url)
+                      }}
+                      className="shrink-0"
+                    >
+                      Download Markdown
+                    </Button>
+                  </HScroll>
                 </div>
               )}
             </div>
-          </section>
+          </div>
+
+          {result?.daily_plan?.length ? (
+            <div className="mt-8 rounded-3xl border border-white/10 bg-black/30 p-6">
+              <div className="text-xs uppercase tracking-[0.18em] text-white/55">Preview</div>
+              <div className="mt-3 grid gap-6 lg:grid-cols-2">
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Day 1</div>
+                  <div className="mt-2 text-lg font-semibold text-white break-words">{result.daily_plan[0].focus}</div>
+                  <ul className="mt-3 space-y-2 text-sm text-white/80">
+                    {result.daily_plan[0].tasks?.slice(0, 6).map((t, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span className="text-white/40">•</span>
+                        <span className="break-words">{t}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5">
+                  <div className="text-xs uppercase tracking-[0.18em] text-white/55">Flashcards</div>
+                  <div className="mt-3 grid gap-3">
+                    {result.flashcards?.slice(0, 3).map((c, i) => (
+                      <div key={i} className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-sm font-semibold text-white/90 break-words">{c.front}</div>
+                        <div className="mt-2 text-sm text-white/70 break-words">{c.back}</div>
+                      </div>
+                    ))}
+                    {!result.flashcards?.length ? (
+                      <div className="text-sm text-white/55">No flashcards generated.</div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
   )
 }
-
-
-export default function PlanPage() {
-  return (
-    <AuthGate>
-      <PlanPageInner />
-    </AuthGate>
-  )
-}
-

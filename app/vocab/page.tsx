@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Textarea } from '@/components/ui'
+import { Button, Card, Textarea, Input } from '@/components/ui'
 import FlipCard from '@/components/FlipCard'
 import { FileUp, Loader2, RotateCcw, ArrowLeftRight } from 'lucide-react'
 import AuthGate from '@/components/AuthGate'
@@ -176,6 +176,19 @@ function VocabPageInner() {
     setTargetLang(found.targetLang)
     setSwappedView(!!found.swappedView)
     setTab('cards')
+
+    // reset learn view when switching sets
+    setLearnStarted(false)
+    setFinished(false)
+    setQueue([])
+    setCurrent(null)
+    setReveal(false)
+    setAnswer('')
+    setCorrectCount(0)
+    setWrongCount(0)
+    setWrongTerms({})
+    setStreak(0)
+    setSessionStart(null)
   }
 
   function clearAll() {
@@ -216,7 +229,6 @@ function VocabPageInner() {
       }
 
       if (!res.ok) {
-        // ✅ sokkal értelmesebb üzenetek (a “Please try again” helyett)
         if (res.status === 401) throw new Error('Session expired. Please log in again.')
         if (res.status === 402) throw new Error('No credits left. Please buy Pro to continue.')
         const msg = json?.error ?? `Request failed (${res.status})`
@@ -290,12 +302,19 @@ function VocabPageInner() {
     setFiles([])
     setData(null)
     setError(null)
+
+    // reset learn
     setLearnStarted(false)
     setFinished(false)
     setQueue([])
     setCurrent(null)
     setReveal(false)
     setAnswer('')
+    setCorrectCount(0)
+    setWrongCount(0)
+    setWrongTerms({})
+    setStreak(0)
+    setSessionStart(null)
   }
 
   function normalizeGuess(s: string) {
@@ -399,7 +418,7 @@ function VocabPageInner() {
   }
 
   function makeChoices(correct: string, allTranslations: string[]) {
-    const pool = allTranslations.filter((t) => t !== correct)
+    const pool = allTranslations.filter((t) => normalizeGuess(t) !== normalizeGuess(correct))
     const choices = [correct]
     while (choices.length < 4 && pool.length > 0) {
       const pick = pool.splice(Math.floor(Math.random() * pool.length), 1)[0]
@@ -438,6 +457,18 @@ function VocabPageInner() {
     const s = total % 60
     return `${m}:${String(s).padStart(2, '0')}`
   }
+
+  const currentCard = current != null && data?.items?.[current] ? data.items[current] : null
+  const allTranslations = useMemo(
+    () => (data?.items ?? []).map((x) => x.translation).filter(Boolean),
+    [data]
+  )
+
+  const mcqChoices = useMemo(() => {
+    if (!currentCard) return []
+    return makeChoices(currentCard.translation, allTranslations)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCard?.translation, data?.items?.length, learnMode])
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12">
@@ -573,9 +604,9 @@ function VocabPageInner() {
             </>
           ) : tab === 'learn' ? (
             <>
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="text-xs uppercase tracking-[0.18em] text-white/55">Learn</div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button variant={learnMode === 'type' ? 'primary' : 'ghost'} onClick={() => setLearnMode('type')}>
                     Type
                   </Button>
@@ -594,13 +625,131 @@ function VocabPageInner() {
               </div>
 
               {!data?.items?.length ? (
-                <p className="mt-3 text-sm text-white/60">
-                  Generate a set first, then come back here to learn it quiz-style.
-                </p>
+                <p className="mt-3 text-sm text-white/60">Generate a set first, then come back here to learn it quiz-style.</p>
+              ) : finished ? (
+                <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+                  <div className="text-sm font-semibold text-white/90">Finished 🎉</div>
+                  <div className="mt-2 text-sm text-white/70">
+                    Correct: <b>{correctCount}</b> • Wrong: <b>{wrongCount}</b> • Time: <b>{formatTime(elapsedMs)}</b>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <Button onClick={startLearnSession}>Start again</Button>
+                    <Button variant="ghost" onClick={() => setTab('cards')}>Back to cards</Button>
+                  </div>
+                </div>
+              ) : !learnStarted ? (
+                <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+                  <div className="text-sm text-white/80">
+                    You have <b>{totalCards}</b> cards in this set. Start a quick quiz session.
+                  </div>
+                  <Button className="mt-3" onClick={startLearnSession}>Start learning</Button>
+                </div>
               ) : (
-                <p className="mt-3 text-sm text-white/60">
-                  (Learn UI unchanged here. If you want, I can tune spacing/UX after.)
-                </p>
+                <div className="mt-4 space-y-4">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-white/55">Term</div>
+                        <div className="mt-1 text-lg font-semibold text-white break-words">
+                          {currentCard?.term ?? ''}
+                        </div>
+                        {currentCard?.example ? (
+                          <div className="mt-2 text-xs text-white/55 break-words">
+                            Example: {currentCard.example}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="shrink-0 text-right">
+                        <div className="text-xs text-white/55">Time</div>
+                        <div className="mt-1 text-sm text-white/80 tabular-nums">{formatTime(elapsedMs)}</div>
+                        <div className="mt-2 text-xs text-white/55">Streak</div>
+                        <div className="mt-1 text-sm text-white/80">{streak}</div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 text-xs text-white/55">
+                      Progress: {correctCount + wrongCount + 1} / {totalCards}
+                    </div>
+                  </div>
+
+                  {learnMode === 'type' ? (
+                    <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                      <div className="text-xs uppercase tracking-[0.18em] text-white/55">Type the translation</div>
+                      <Input
+                        className="mt-3"
+                        value={answer}
+                        onChange={(e) => setAnswer(e.target.value)}
+                        placeholder="Your answer…"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') checkTypedAnswer()
+                        }}
+                      />
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button onClick={checkTypedAnswer} disabled={!answer.trim().length}>
+                          Check
+                        </Button>
+                        <Button variant="ghost" onClick={() => handleWrong(true)}>
+                          I don't know
+                        </Button>
+                        {reveal ? (
+                          <Button variant="ghost" onClick={continueAfterReveal}>
+                            Continue
+                          </Button>
+                        ) : null}
+                      </div>
+
+                      {reveal ? (
+                        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                          <div className="text-xs text-white/55">Answer</div>
+                          <div className="mt-1 text-sm text-white/85 break-words">
+                            {currentCard?.translation ?? ''}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                      <div className="text-xs uppercase tracking-[0.18em] text-white/55">Choose the translation</div>
+
+                      <div className="mt-3 grid gap-2">
+                        {mcqChoices.map((c, i) => (
+                          <Button
+                            key={i}
+                            variant="ghost"
+                            className="justify-start"
+                            onClick={() => checkChoice(c)}
+                          >
+                            {c}
+                          </Button>
+                        ))}
+                      </div>
+
+                      {reveal ? (
+                        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                          <div className="text-xs text-white/55">Correct answer</div>
+                          <div className="mt-1 text-sm text-white/85 break-words">
+                            {currentCard?.translation ?? ''}
+                          </div>
+                          <Button className="mt-3" onClick={continueAfterReveal}>
+                            Continue
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between text-xs text-white/55">
+                    <div>
+                      Correct: <b className="text-white/80">{correctCount}</b> • Wrong:{' '}
+                      <b className="text-white/80">{wrongCount}</b>
+                    </div>
+                    <div className="text-white/40">
+                      {Object.keys(wrongTerms).length ? `Wrong terms: ${Object.keys(wrongTerms).length}` : ''}
+                    </div>
+                  </div>
+                </div>
               )}
             </>
           ) : (

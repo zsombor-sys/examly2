@@ -244,7 +244,8 @@ function Inner() {
       setSaved([])
       setSelectedId(null)
     } catch (e: any) {
-      setAskError(e?.message ?? 'Error')
+      // ✅ FIX: this should be setError, not setAskError
+      setError(e?.message ?? 'Error')
     }
   }
 
@@ -274,7 +275,7 @@ function Inner() {
     }
   }
 
-  // ✅ FIX: title is NOT the prompt or backend title
+  // title is static, prompt is shown small
   const displayTitle = 'Study plan'
   const displayInput = shortPrompt(prompt)
 
@@ -369,7 +370,6 @@ function Inner() {
 
         {/* MAIN */}
         <div className="min-w-0">
-          {/* Header card */}
           <div className="rounded-3xl border border-white/10 bg-black/40 p-6 min-w-0 overflow-hidden">
             <div className="flex flex-col gap-4 md:flex-row md:items-start md:gap-6 min-w-0">
               <div className="min-w-0 flex-1">
@@ -427,9 +427,9 @@ function Inner() {
                 </div>
               )}
 
-              {/* DAILY (✅ FIXED GRID + STICKY TIMER) */}
+              {/* DAILY ✅ Fix: only 2 columns from XL, so laptop doesn't squeeze left column */}
               {tab === 'daily' && result && (
-                <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] items-start min-w-0">
+                <div className="grid gap-6 items-start min-w-0 xl:grid-cols-[minmax(0,1fr)_360px]">
                   <div className="space-y-6 min-w-0">
                     {(result?.daily_plan ?? []).map((d, di) => (
                       <section
@@ -468,7 +468,7 @@ function Inner() {
                     ))}
                   </div>
 
-                  <aside className="shrink-0 rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden lg:sticky lg:top-6">
+                  <aside className="shrink-0 w-full rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden xl:w-[360px] xl:sticky xl:top-6 self-start">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
 
                     <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 overflow-hidden">

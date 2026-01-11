@@ -29,11 +29,9 @@ async function fileToText(file: File) {
   }
 
   if (isImage(name, type)) {
-    // For images we pass base64 to the model (vision)
     return ''
   }
 
-  // Fallback (txt etc)
   return Buffer.from(arr).toString('utf8').slice(0, 120_000)
 }
 
@@ -122,7 +120,6 @@ function normalizePlan(obj: any) {
 
   out.notes = Array.isArray(out.notes) ? out.notes.map((x: any) => String(x)) : []
 
-  // Ensure minimum content so UI never "dies"
   if (!out.title) out.title = 'Untitled plan'
   if (!out.quick_summary) out.quick_summary = 'No summary generated.'
   if (!out.study_notes) out.study_notes = 'No notes generated.'
@@ -132,11 +129,15 @@ function normalizePlan(obj: any) {
 
 function buildSystemPrompt() {
   return `
-You are Examly. Output ONLY valid JSON, no markdown fences.
-Return this shape:
+You are Examly. Output ONLY valid JSON (no extra text, no markdown fences).
+
+CRITICAL JSON RULE:
+- In JSON strings you MUST escape backslashes. Example: to output \\(x^2\\) you must write \\\\(...\\\\) in JSON source.
+
+Return this exact shape:
 {
   "title": string,
-  "language": string,
+  "language": "Hungarian"|"English",
   "exam_date": string|null,
   "confidence": number,
   "quick_summary": string,
@@ -146,7 +147,41 @@ Return this shape:
   "practice_questions": [{"id": string, "type":"mcq"|"short", "question": string, "options": string[]|null, "answer": string|null, "explanation": string|null}],
   "notes": string[]
 }
-Keep it concise but useful.
+
+LANGUAGE:
+- If the user's prompt is Hungarian (or mentions Hungarian school terms), output Hungarian text and set language="Hungarian".
+- Otherwise output English text and set language="English".
+
+STYLE GOAL (VERY IMPORTANT):
+- Write like a school notebook / textbook, NOT like a chat dump.
+- Use clean headings, short bullets, and step-by-step explanations.
+
+MATH FORMATTING (KaTeX):
+- In study_notes and explanations, use ONLY KaTeX-friendly LaTeX delimiters:
+  inline: \\( ... \\)
+  block:  \\[ ... \\]
+- Prefer school notation: \\frac, \\sqrt, parentheses, \\cdot.
+- Do not use $$.
+
+STUDY_NOTES STRUCTURE (must follow):
+Use Markdown with these sections (omit irrelevant ones):
+1) # FOGALMAK / DEFINITIONS
+2) # KÉPLETEK / FORMULAS (with clean block formulas)
+3) # LÉPÉSEK / METHOD (numbered steps)
+4) # PÉLDA (at least 1 worked example if topic is math/physics/chemistry)
+   - show steps
+   - final answer clearly
+5) # GYAKORI HIBÁK / COMMON MISTAKES
+6) # GYORS ELLENŐRZŐLISTA / CHECKLIST
+
+DAILY_PLAN:
+- Keep focus short (max ~8 words), no long paragraphs.
+- tasks should be short bullets (max ~12 words each).
+- blocks: use typical pomodoro: 25/5/25/10 (or similar), max 8 blocks per day.
+
+PRACTICE_QUESTIONS:
+- For math: include steps in explanation using \\( \\) and \\[ \\].
+- Keep question text concise.
 `.trim()
 }
 
@@ -159,9 +194,11 @@ async function callModel(
 ) {
   const sys = buildSystemPrompt()
 
-  // Build a message for vision if images exist
   const userContent: any[] = []
-  userContent.push({ type: 'text', text: `USER PROMPT:\n${prompt || '(empty)'}\n\nFILES TEXT:\n${textFromFiles || '(none)'}` })
+  userContent.push({
+    type: 'text',
+    text: `USER PROMPT:\n${prompt || '(empty)'}\n\nFILES TEXT:\n${textFromFiles || '(none)'}`,
+  })
 
   for (const img of images.slice(0, 6)) {
     userContent.push({
@@ -187,27 +224,21 @@ export async function POST(req: Request) {
     const user = await requireUser(req)
     await consumeGeneration(user.id)
 
-
     const form = await req.formData()
     const prompt = String(form.get('prompt') ?? '')
 
-    // ACCEPT BOTH 'files' and 'file' (your frontend used 'file' earlier)
-    const files = [
-      ...(form.getAll('files') as File[]),
-      ...(form.getAll('file') as File[]),
-    ].filter(Boolean) as File[]
+    const files = [...(form.getAll('files') as File[]), ...(form.getAll('file') as File[])]
+      .filter(Boolean) as File[]
 
     const fileNames = files.map((f) => f.name).slice(0, 20)
 
     const openAiKey = process.env.OPENAI_API_KEY
     if (!openAiKey) {
-      // IMPORTANT: wrap in {result: ...} so frontend always works
       return NextResponse.json({ result: mock(prompt, fileNames) })
     }
 
     const client = new OpenAI({ apiKey: openAiKey })
 
-    // Extract text from PDFs / txt
     const textParts: string[] = []
     const imageParts: Array<{ name: string; b64: string; mime: string }> = []
 
@@ -225,14 +256,12 @@ export async function POST(req: Request) {
 
     const textFromFiles = textParts.join('\n\n').slice(0, 120_000)
 
-    // Use a sane default model
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
     const raw = await callModel(client, model, prompt, textFromFiles, imageParts)
     const parsed = safeParseJson(raw)
     const plan = normalizePlan(parsed)
 
-    // IMPORTANT: wrap in {result: ...}
     return NextResponse.json({ result: plan })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400 })
@@ -250,8 +279,8 @@ function mock(prompt: string, fileNames: string[]) {
     quick_summary: `Mock response so you can test the UI.\n\nPrompt: ${prompt || '(empty)'}\nUploads: ${fileNames.join(', ') || '(none)'}`,
     study_notes:
       lang === 'Hungarian'
-        ? `## Jegyzetek (mock)\n- Add meg a Vercelben az OPENAI_API_KEY-t\n- Utána a Generálás valós tartalmat ad\n\n## Következő lépés\n- Próbáld újra a Generatet`
-        : `## Notes (mock)\n- Add OPENAI_API_KEY in Vercel\n- Then Generate returns real content\n\n## Next\n- Try Generate again`,
+        ? `# FOGALMAK (mock)\n- Példa: másodfokú egyenlet alakja: \\(ax^2+bx+c=0\\)\n\n# KÉPLETEK (mock)\n\\[D=b^2-4ac\\]\n\\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]\n\n# LÉPÉSEK\n1. Azonosítsd: \\(a,b,c\\)\n2. Számold ki: \\(D\\)\n3. Számold ki a gyököket\n\n# PÉLDA\nOldd meg: \\(x^2-5x+6=0\\)\n\\[D=(-5)^2-4\\cdot1\\cdot6=25-24=1\\]\n\\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3,\\ x_2=2\\]\n\n# GYAKORI HIBÁK\n- Elfelejted a \\(2a\\)-t a nevezőben.\n`
+        : `# DEFINITIONS (mock)\n- Quadratic: \\(ax^2+bx+c=0\\)\n\n# FORMULAS\n\\[D=b^2-4ac\\]\n\\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]\n`,
     flashcards: [
       { front: 'Key term', back: 'Short definition' },
       { front: 'Example', back: 'One worked example' },
@@ -259,21 +288,9 @@ function mock(prompt: string, fileNames: string[]) {
     daily_plan: [
       {
         day: 'Day 1',
-        focus: 'Read + highlight key terms',
+        focus: 'Definitions + formulas',
         minutes: 60,
-        tasks: ['Skim notes', 'Mark unclear parts', 'Make 10 flashcards'],
-        blocks: [
-          { type: 'study', minutes: 25, label: 'Focus' },
-          { type: 'break', minutes: 5, label: 'Break' },
-          { type: 'study', minutes: 25, label: 'Focus' },
-          { type: 'break', minutes: 10, label: 'Break' },
-        ],
-      },
-      {
-        day: 'Day 2',
-        focus: 'Active recall + summary',
-        minutes: 60,
-        tasks: ['Rewrite summary', 'Answer 8 short questions', 'Fix weak spots'],
+        tasks: ['Memorize D formula', 'Solve 6 easy equations', 'Check answers'],
         blocks: [
           { type: 'study', minutes: 25, label: 'Focus' },
           { type: 'break', minutes: 5, label: 'Break' },
@@ -282,14 +299,16 @@ function mock(prompt: string, fileNames: string[]) {
         ],
       },
     ],
-    practice_questions: Array.from({ length: 15 }).map((_, i) => ({
-      id: `q${i + 1}`,
-      type: i % 2 === 0 ? 'mcq' : 'short',
-      question: i % 2 === 0 ? 'Which option best matches the topic?' : 'Write a 2–3 sentence summary.',
-      options: i % 2 === 0 ? ['A', 'B', 'C', 'D'] : null,
-      answer: i % 2 === 0 ? 'A' : null,
-      explanation: '',
-    })),
+    practice_questions: [
+      {
+        id: 'q1',
+        type: 'short',
+        question: 'Solve: \\(x^2-5x+6=0\\).',
+        options: null,
+        answer: 'x=2 and x=3',
+        explanation: '\\[D=(-5)^2-4\\cdot1\\cdot6=1\\]\\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3, x_2=2\\]',
+      },
+    ],
     notes: ['Add OPENAI_API_KEY to enable real generation.'],
   })
 }

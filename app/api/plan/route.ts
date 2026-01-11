@@ -61,13 +61,42 @@ const OUTPUT_TEMPLATE = {
   notes: [] as string[],
 }
 
+/**
+ * ✅ FIX: Model sometimes returns LaTeX with single backslashes inside JSON strings (e.g. \frac, \(, \sqrt),
+ * which breaks JSON.parse with "Bad escaped character".
+ *
+ * This parser:
+ * 1) tries normal JSON.parse
+ * 2) extracts first {...} block and tries parse
+ * 3) repairs invalid backslashes (turns \x into \\x unless it's a valid JSON escape)
+ */
 function safeParseJson(text: string) {
+  const extractJson = (s: string) => {
+    const m = s.match(/\{[\s\S]*\}/)
+    return m ? m[0] : s
+  }
+
+  const repairBackslashesForJson = (s: string) => {
+    // Replace invalid JSON escapes like \a \s \( \frac etc. with \\a \\s \\( \\frac
+    // Keep valid escapes: \" \\ \/ \b \f \n \r \t \uXXXX
+    return s.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
+  }
+
   try {
     return JSON.parse(text)
-  } catch {
-    const m = text.match(/\{[\s\S]*\}/)
-    if (m) return JSON.parse(m[0])
-    throw new Error('Model did not return JSON')
+  } catch {}
+
+  const extracted = extractJson(text)
+  try {
+    return JSON.parse(extracted)
+  } catch {}
+
+  const repaired = repairBackslashesForJson(extracted)
+  try {
+    return JSON.parse(repaired)
+  } catch (e: any) {
+    const snippet = repaired.slice(0, 400)
+    throw new Error(`Model did not return valid JSON (after repair). Snippet:\n${snippet}`)
   }
 }
 

@@ -7,6 +7,7 @@ import { FileUp, Loader2, RotateCcw, ArrowLeftRight } from 'lucide-react'
 import AuthGate from '@/components/AuthGate'
 import { authedFetch } from '@/lib/authClient'
 import { supabase } from '@/lib/supabaseClient'
+import HScroll from '@/components/HScroll' // ✅ FIX: gombsor ne lógjon ki
 
 type Item = { term: string; translation: string; example?: string }
 type Payload = { title: string; language: string; items: Item[] }
@@ -472,8 +473,9 @@ function VocabPageInner() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12">
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
+      {/* ✅ FIX: min-w-0 + gombsor HScroll-ban, hogy ne lógjon ki */}
+      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between min-w-0">
+        <div className="min-w-0">
           <h1 className="text-3xl font-semibold tracking-tight">Vocab</h1>
           <p className="mt-2 text-white/70 max-w-[70ch]">
             Paste a word list or upload a photo of your vocab sheet. Examly turns it into flashcards you can actually
@@ -482,27 +484,41 @@ function VocabPageInner() {
           <p className="mt-1 text-xs text-white/50">Free: 1 set / 48h. Pro: unlimited.</p>
         </div>
 
-        <div className="-mx-1 flex gap-2 overflow-x-auto px-1 no-scrollbar">
-          <Button className="shrink-0" variant={tab === 'cards' ? 'primary' : 'ghost'} onClick={() => setTab('cards')}>
-            Cards
-          </Button>
-          <Button
-            className="shrink-0"
-            variant={tab === 'history' ? 'primary' : 'ghost'}
-            onClick={() => setTab('history')}
-          >
-            History
-          </Button>
-          <Button className="shrink-0" variant={tab === 'learn' ? 'primary' : 'ghost'} onClick={() => setTab('learn')}>
-            Learn
-          </Button>
-          <Button className="shrink-0" variant="ghost" onClick={reset}>
-            <RotateCcw size={16} /> Reset
-          </Button>
-          <Button className="shrink-0" onClick={generate} disabled={loading}>
-            {loading ? <Loader2 className="animate-spin" size={16} /> : <FileUp size={16} />}
-            Generate set
-          </Button>
+        <div className="min-w-0 overflow-hidden md:shrink-0">
+          <HScroll className="max-w-full md:max-w-[560px] -mx-1 px-1 justify-end">
+            <Button
+              className="shrink-0"
+              variant={tab === 'cards' ? 'primary' : 'ghost'}
+              onClick={() => setTab('cards')}
+            >
+              Cards
+            </Button>
+
+            <Button
+              className="shrink-0"
+              variant={tab === 'history' ? 'primary' : 'ghost'}
+              onClick={() => setTab('history')}
+            >
+              History
+            </Button>
+
+            <Button
+              className="shrink-0"
+              variant={tab === 'learn' ? 'primary' : 'ghost'}
+              onClick={() => setTab('learn')}
+            >
+              Learn
+            </Button>
+
+            <Button className="shrink-0" variant="ghost" onClick={reset}>
+              <RotateCcw size={16} /> Reset
+            </Button>
+
+            <Button className="shrink-0" onClick={generate} disabled={loading}>
+              {loading ? <Loader2 className="animate-spin" size={16} /> : <FileUp size={16} />}
+              Generate set
+            </Button>
+          </HScroll>
         </div>
       </div>
 

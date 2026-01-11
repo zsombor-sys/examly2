@@ -52,10 +52,10 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n))
 }
 
-function titleFromPrompt(p: string) {
+function shortPrompt(p: string) {
   const t = p.trim().replace(/\s+/g, ' ')
-  if (!t) return 'Untitled plan'
-  return t.length > 60 ? t.slice(0, 60) + '…' : t
+  if (!t) return ''
+  return t.length > 120 ? t.slice(0, 120) + '…' : t
 }
 
 function normalizeBlocks(blocks?: Block[]) {
@@ -274,7 +274,10 @@ function Inner() {
     }
   }
 
-  const planTitle = result?.title ?? titleFromPrompt(prompt)
+  // ✅ FIX: title is NOT the prompt or backend title
+  const displayTitle = 'Study plan'
+  const displayInput = shortPrompt(prompt)
+
   const canGenerate = !loading && (prompt.trim().length >= 6 || !!file)
 
   return (
@@ -368,13 +371,22 @@ function Inner() {
         <div className="min-w-0">
           {/* Header card */}
           <div className="rounded-3xl border border-white/10 bg-black/40 p-6 min-w-0 overflow-hidden">
-            {/* ✅ Mobile: stack, Desktop: row */}
             <div className="flex flex-col gap-4 md:flex-row md:items-start md:gap-6 min-w-0">
               <div className="min-w-0 flex-1">
                 <div className="text-xs uppercase tracking-[0.18em] text-white/55">Plan</div>
+
+                {/* ✅ title is static, not prompt */}
                 <h1 className="mt-2 text-2xl md:text-3xl font-semibold tracking-tight text-white break-words">
-                  {planTitle}
+                  {displayTitle}
                 </h1>
+
+                {/* ✅ show prompt as small “Your input”, not a title */}
+                {displayInput ? (
+                  <p className="mt-2 text-sm text-white/55 break-words">
+                    <span className="text-white/40">Your input:</span> {displayInput}
+                  </p>
+                ) : null}
+
                 {result?.quick_summary ? (
                   <p className="mt-2 max-w-[80ch] text-sm text-white/70 break-words">{result.quick_summary}</p>
                 ) : (
@@ -429,7 +441,7 @@ function Inner() {
                 </div>
               )}
 
-              {/* NOTES: study_notes here */}
+              {/* NOTES */}
               {tab === 'notes' && result && (
                 <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                   <div className="text-xs uppercase tracking-[0.18em] text-white/55">Study notes</div>
@@ -439,7 +451,7 @@ function Inner() {
                 </div>
               )}
 
-              {/* DAILY: daily plan + pomodoro here */}
+              {/* DAILY */}
               {tab === 'daily' && result && (
                 <div className="grid gap-6 lg:grid-cols-[1fr_360px] min-w-0">
                   <div className="space-y-6 min-w-0">
@@ -602,7 +614,7 @@ function Inner() {
                 </div>
               )}
 
-              {/* ASK: real call */}
+              {/* ASK */}
               {tab === 'ask' && result && (
                 <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                   <div className="text-xs uppercase tracking-[0.18em] text-white/55">Ask</div>

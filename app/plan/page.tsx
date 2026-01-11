@@ -244,7 +244,7 @@ function Inner() {
       setSaved([])
       setSelectedId(null)
     } catch (e: any) {
-      setError(e?.message ?? 'Error')
+      setAskError(e?.message ?? 'Error')
     }
   }
 
@@ -375,12 +375,10 @@ function Inner() {
               <div className="min-w-0 flex-1">
                 <div className="text-xs uppercase tracking-[0.18em] text-white/55">Plan</div>
 
-                {/* ✅ title is static, not prompt */}
                 <h1 className="mt-2 text-2xl md:text-3xl font-semibold tracking-tight text-white break-words">
                   {displayTitle}
                 </h1>
 
-                {/* ✅ show prompt as small “Your input”, not a title */}
                 {displayInput ? (
                   <p className="mt-2 text-sm text-white/55 break-words">
                     <span className="text-white/40">Your input:</span> {displayInput}
@@ -419,28 +417,6 @@ function Inner() {
                 </div>
               )}
 
-              {/* PLAN: overview only */}
-              {tab === 'plan' && result && (
-                <div className="grid gap-6 lg:grid-cols-[1fr_320px] min-w-0">
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Overview</div>
-                    <ul className="mt-3 space-y-2 text-sm text-white/75">
-                      <li>• Daily plan: {result.daily_plan?.length ?? 0} day(s)</li>
-                      <li>• Flashcards: {result.flashcards?.length ?? 0}</li>
-                      <li>• Practice questions: {result.practice_questions?.length ?? 0}</li>
-                      <li>• Notes: generated (see Notes tab)</li>
-                    </ul>
-                  </section>
-
-                  <aside className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Tip</div>
-                    <div className="mt-3 text-sm text-white/70">
-                      If your plan feels too generic, upload at least 1 PDF/photo from your material.
-                    </div>
-                  </aside>
-                </div>
-              )}
-
               {/* NOTES */}
               {tab === 'notes' && result && (
                 <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
@@ -451,9 +427,9 @@ function Inner() {
                 </div>
               )}
 
-              {/* DAILY */}
+              {/* DAILY (✅ FIXED GRID + STICKY TIMER) */}
               {tab === 'daily' && result && (
-                <div className="grid gap-6 lg:grid-cols-[1fr_360px] min-w-0">
+                <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] items-start min-w-0">
                   <div className="space-y-6 min-w-0">
                     {(result?.daily_plan ?? []).map((d, di) => (
                       <section
@@ -492,10 +468,10 @@ function Inner() {
                     ))}
                   </div>
 
-                  <aside className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
+                  <aside className="shrink-0 rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden lg:sticky lg:top-6">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
 
-                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 min-w-0 overflow-hidden">
+                    <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 overflow-hidden">
                       <div className="flex items-start justify-between gap-3 min-w-0">
                         <div className="min-w-0">
                           <div className="text-xs text-white/55">Session</div>
@@ -518,7 +494,11 @@ function Inner() {
                           <div
                             className="h-full bg-white/50"
                             style={{
-                              width: `${activeBlock.minutes > 0 ? 100 - (secondsLeft / (activeBlock.minutes * 60)) * 100 : 0}%`,
+                              width: `${
+                                activeBlock.minutes > 0
+                                  ? 100 - (secondsLeft / (activeBlock.minutes * 60)) * 100
+                                  : 0
+                              }%`,
                             }}
                           />
                         ) : null}
@@ -618,9 +598,6 @@ function Inner() {
               {tab === 'ask' && result && (
                 <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
                   <div className="text-xs uppercase tracking-[0.18em] text-white/55">Ask</div>
-                  <p className="mt-2 text-sm text-white/70">
-                    Kérdezz rá bármire a témából (képlet, lépések, magyarázat, feladatmegoldás).
-                  </p>
 
                   <Textarea
                     value={askText}

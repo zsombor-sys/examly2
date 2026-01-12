@@ -29,6 +29,7 @@ async function fileToText(file: File) {
   }
 
   if (isImage(name, type)) {
+    // images are handled via vision (base64), no text extraction here
     return ''
   }
 
@@ -62,31 +63,35 @@ const OUTPUT_TEMPLATE = {
 }
 
 /**
- * ✅ FIX: Model sometimes returns LaTeX with single backslashes inside JSON strings (e.g. \frac, \(, \sqrt),
- * which breaks JSON.parse with "Bad escaped character".
+ * ✅ FIX: Robust JSON parsing
+ * - model sometimes outputs invalid JSON due to single backslashes in LaTeX
+ * - or extra text around the JSON
  *
- * This parser:
- * 1) tries normal JSON.parse
- * 2) extracts first {...} block and tries parse
- * 3) repairs invalid backslashes (turns \x into \\x unless it's a valid JSON escape)
+ * Strategy:
+ * 1) try JSON.parse directly
+ * 2) extract first {...} block, parse
+ * 3) repair invalid backslashes (turn \x into \\x unless it's a valid JSON escape), parse
  */
 function safeParseJson(text: string) {
+  const raw = String(text ?? '')
+  if (!raw.trim()) throw new Error('Model returned empty response (no JSON).')
+
   const extractJson = (s: string) => {
     const m = s.match(/\{[\s\S]*\}/)
     return m ? m[0] : s
   }
 
   const repairBackslashesForJson = (s: string) => {
-    // Replace invalid JSON escapes like \a \s \( \frac etc. with \\a \\s \\( \\frac
     // Keep valid escapes: \" \\ \/ \b \f \n \r \t \uXXXX
+    // Repair everything else (like \( \) \frac \sqrt) into \\( \\) \\frac \\sqrt so JSON.parse won't crash
     return s.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
   }
 
   try {
-    return JSON.parse(text)
+    return JSON.parse(raw)
   } catch {}
 
-  const extracted = extractJson(text)
+  const extracted = extractJson(raw)
   try {
     return JSON.parse(extracted)
   } catch {}
@@ -94,8 +99,8 @@ function safeParseJson(text: string) {
   const repaired = repairBackslashesForJson(extracted)
   try {
     return JSON.parse(repaired)
-  } catch (e: any) {
-    const snippet = repaired.slice(0, 400)
+  } catch {
+    const snippet = repaired.slice(0, 500)
     throw new Error(`Model did not return valid JSON (after repair). Snippet:\n${snippet}`)
   }
 }
@@ -149,6 +154,7 @@ function normalizePlan(obj: any) {
 
   out.notes = Array.isArray(out.notes) ? out.notes.map((x: any) => String(x)) : []
 
+  // Ensure minimum content so UI never "dies"
   if (!out.title) out.title = 'Untitled plan'
   if (!out.quick_summary) out.quick_summary = 'No summary generated.'
   if (!out.study_notes) out.study_notes = 'No notes generated.'
@@ -157,13 +163,11 @@ function normalizePlan(obj: any) {
 }
 
 function buildSystemPrompt() {
+  // Keep it strict + readable. JSON validity is enforced by response_format below.
   return `
-You are Examly. Output ONLY valid JSON (no extra text, no markdown fences).
+You are Examly.
 
-CRITICAL JSON RULE:
-- In JSON strings you MUST escape backslashes. Example: to output \\(x^2\\) you must write \\\\(...\\\\) in JSON source.
-
-Return this exact shape:
+Return ONLY a JSON object that matches this shape:
 {
   "title": string,
   "language": "Hungarian"|"English",
@@ -178,39 +182,30 @@ Return this exact shape:
 }
 
 LANGUAGE:
-- If the user's prompt is Hungarian (or mentions Hungarian school terms), output Hungarian text and set language="Hungarian".
-- Otherwise output English text and set language="English".
+- If the user prompt is Hungarian (or mentions Hungarian school terms), output Hungarian and set language="Hungarian".
+- Otherwise output English and set language="English".
 
-STYLE GOAL (VERY IMPORTANT):
-- Write like a school notebook / textbook, NOT like a chat dump.
-- Use clean headings, short bullets, and step-by-step explanations.
+STYLE (school notebook / textbook):
+- Clean headings, short bullets, step-by-step explanations.
+- Avoid chatty filler.
 
-MATH FORMATTING (KaTeX):
-- In study_notes and explanations, use ONLY KaTeX-friendly LaTeX delimiters:
-  inline: \\( ... \\)
-  block:  \\[ ... \\]
-- Prefer school notation: \\frac, \\sqrt, parentheses, \\cdot.
-- Do not use $$.
+MATH (KaTeX in Markdown):
+- Use inline \\( ... \\) and block \\[ ... \\]
+- Prefer \\frac, \\sqrt, \\cdot
+- Do not use $$
 
-STUDY_NOTES STRUCTURE (must follow):
-Use Markdown with these sections (omit irrelevant ones):
+STUDY_NOTES STRUCTURE (use these headings):
 1) # FOGALMAK / DEFINITIONS
-2) # KÉPLETEK / FORMULAS (with clean block formulas)
-3) # LÉPÉSEK / METHOD (numbered steps)
-4) # PÉLDA (at least 1 worked example if topic is math/physics/chemistry)
-   - show steps
-   - final answer clearly
+2) # KÉPLETEK / FORMULAS
+3) # LÉPÉSEK / METHOD
+4) # PÉLDA
 5) # GYAKORI HIBÁK / COMMON MISTAKES
 6) # GYORS ELLENŐRZŐLISTA / CHECKLIST
 
 DAILY_PLAN:
-- Keep focus short (max ~8 words), no long paragraphs.
-- tasks should be short bullets (max ~12 words each).
-- blocks: use typical pomodoro: 25/5/25/10 (or similar), max 8 blocks per day.
-
-PRACTICE_QUESTIONS:
-- For math: include steps in explanation using \\( \\) and \\[ \\].
-- Keep question text concise.
+- focus max ~8 words
+- tasks max ~12 words each
+- blocks typical pomodoro: 25/5/25/10, max 8 blocks/day
 `.trim()
 }
 
@@ -223,11 +218,12 @@ async function callModel(
 ) {
   const sys = buildSystemPrompt()
 
-  const userContent: any[] = []
-  userContent.push({
-    type: 'text',
-    text: `USER PROMPT:\n${prompt || '(empty)'}\n\nFILES TEXT:\n${textFromFiles || '(none)'}`,
-  })
+  const userContent: any[] = [
+    {
+      type: 'text',
+      text: `USER PROMPT:\n${prompt || '(empty)'}\n\nFILES TEXT:\n${textFromFiles || '(none)'}`,
+    },
+  ]
 
   for (const img of images.slice(0, 6)) {
     userContent.push({
@@ -243,6 +239,9 @@ async function callModel(
       { role: 'user', content: userContent as any },
     ],
     temperature: 0.3,
+
+    // ✅ MAIN FIX: force strict JSON output, no extra text allowed
+    response_format: { type: 'json_object' },
   })
 
   return resp.choices?.[0]?.message?.content ?? ''
@@ -256,6 +255,7 @@ export async function POST(req: Request) {
     const form = await req.formData()
     const prompt = String(form.get('prompt') ?? '')
 
+    // accept both 'files' and 'file'
     const files = [...(form.getAll('files') as File[]), ...(form.getAll('file') as File[])]
       .filter(Boolean) as File[]
 
@@ -284,7 +284,6 @@ export async function POST(req: Request) {
     }
 
     const textFromFiles = textParts.join('\n\n').slice(0, 120_000)
-
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
     const raw = await callModel(client, model, prompt, textFromFiles, imageParts)
@@ -308,18 +307,43 @@ function mock(prompt: string, fileNames: string[]) {
     quick_summary: `Mock response so you can test the UI.\n\nPrompt: ${prompt || '(empty)'}\nUploads: ${fileNames.join(', ') || '(none)'}`,
     study_notes:
       lang === 'Hungarian'
-        ? `# FOGALMAK (mock)\n- Példa: másodfokú egyenlet alakja: \\(ax^2+bx+c=0\\)\n\n# KÉPLETEK (mock)\n\\[D=b^2-4ac\\]\n\\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]\n\n# LÉPÉSEK\n1. Azonosítsd: \\(a,b,c\\)\n2. Számold ki: \\(D\\)\n3. Számold ki a gyököket\n\n# PÉLDA\nOldd meg: \\(x^2-5x+6=0\\)\n\\[D=(-5)^2-4\\cdot1\\cdot6=25-24=1\\]\n\\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3,\\ x_2=2\\]\n\n# GYAKORI HIBÁK\n- Elfelejted a \\(2a\\)-t a nevezőben.\n`
-        : `# DEFINITIONS (mock)\n- Quadratic: \\(ax^2+bx+c=0\\)\n\n# FORMULAS\n\\[D=b^2-4ac\\]\n\\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]\n`,
+        ? `# FOGALMAK (mock)
+- Másodfokú egyenlet: \\(ax^2+bx+c=0\\), \\(a\\neq 0\\)
+
+# KÉPLETEK (mock)
+\\[D=b^2-4ac\\]
+\\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]
+
+# LÉPÉSEK
+1. Azonosítsd: \\(a,b,c\\)
+2. Számold ki: \\(D\\)
+3. Számold ki a gyököket a képlettel
+
+# PÉLDA
+Oldd meg: \\(x^2-5x+6=0\\)
+\\[D=(-5)^2-4\\cdot1\\cdot6=25-24=1\\]
+\\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3,\\ x_2=2\\]
+
+# GYAKORI HIBÁK
+- Elfelejted a \\(2a\\)-t a nevezőben.
+`
+        : `# DEFINITIONS (mock)
+- Quadratic: \\(ax^2+bx+c=0\\), \\(a\\neq0\\)
+
+# FORMULAS
+\\[D=b^2-4ac\\]
+\\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]
+`,
     flashcards: [
-      { front: 'Key term', back: 'Short definition' },
-      { front: 'Example', back: 'One worked example' },
+      { front: 'Diszkrimináns', back: 'D = b^2 - 4ac' },
+      { front: 'Gyökképlet', back: 'x = (-b ± √D) / (2a)' },
     ],
     daily_plan: [
       {
-        day: 'Day 1',
-        focus: 'Definitions + formulas',
+        day: '1. nap',
+        focus: 'Képletek + alapfeladatok',
         minutes: 60,
-        tasks: ['Memorize D formula', 'Solve 6 easy equations', 'Check answers'],
+        tasks: ['Képletek bemagolása', '6 könnyű feladat', 'Ellenőrzés'],
         blocks: [
           { type: 'study', minutes: 25, label: 'Focus' },
           { type: 'break', minutes: 5, label: 'Break' },
@@ -332,10 +356,11 @@ function mock(prompt: string, fileNames: string[]) {
       {
         id: 'q1',
         type: 'short',
-        question: 'Solve: \\(x^2-5x+6=0\\).',
+        question: 'Oldd meg: \\(x^2-5x+6=0\\).',
         options: null,
-        answer: 'x=2 and x=3',
-        explanation: '\\[D=(-5)^2-4\\cdot1\\cdot6=1\\]\\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3, x_2=2\\]',
+        answer: 'x=2 és x=3',
+        explanation:
+          '\\[D=(-5)^2-4\\cdot1\\cdot6=1\\]\\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3,\\ x_2=2\\]',
       },
     ],
     notes: ['Add OPENAI_API_KEY to enable real generation.'],

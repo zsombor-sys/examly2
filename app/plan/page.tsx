@@ -35,6 +35,52 @@ type PlanResult = {
 
 type SavedPlan = { id: string; title: string; created_at: string }
 
+// ✅ Local fallback entry (so history works even on serverless)
+type LocalSavedPlan = SavedPlan & { result: PlanResult }
+
+const LS_KEY = 'examly_plans_v1'
+
+function loadLocalPlans(): LocalSavedPlan[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(LS_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .filter(Boolean)
+      .map((x: any) => ({
+        id: String(x?.id ?? ''),
+        title: String(x?.title ?? ''),
+        created_at: String(x?.created_at ?? ''),
+        result: x?.result ?? null,
+      }))
+      .filter((x: any) => x.id && x.result)
+  } catch {
+    return []
+  }
+}
+
+function saveLocalPlan(entry: LocalSavedPlan) {
+  if (typeof window === 'undefined') return
+  try {
+    const curr = loadLocalPlans()
+    const next = [entry, ...curr.filter((p) => p.id !== entry.id)].slice(0, 50)
+    window.localStorage.setItem(LS_KEY, JSON.stringify(next))
+  } catch {
+    // ignore
+  }
+}
+
+function clearLocalPlans() {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(LS_KEY)
+  } catch {
+    // ignore
+  }
+}
+
 function fmtDate(d: string) {
   try {
     return new Date(d).toLocaleString(undefined, {
@@ -142,18 +188,36 @@ function Inner() {
   }, [blockIndex])
 
   async function loadHistory() {
+    // Always start from local so UI feels instant
+    const local = loadLocalPlans().map(({ id, title, created_at }) => ({ id, title, created_at }))
     try {
       const res = await authedFetch('/api/plan/history')
       const json = await res.json().catch(() => ({} as any))
-      if (!res.ok) return
-      setSaved(Array.isArray(json?.items) ? json.items : [])
+      if (!res.ok) {
+        setSaved(local)
+        return
+      }
+      const serverItems = Array.isArray(json?.items) ? (json.items as SavedPlan[]) : []
+
+      // Merge server + local (keep newest first)
+      const byId = new Map<string, SavedPlan>()
+      for (const x of [...local, ...serverItems]) {
+        if (x?.id) byId.set(x.id, x)
+      }
+      const merged = Array.from(byId.values()).sort((a, b) => {
+        const ta = +new Date(a.created_at || 0)
+        const tb = +new Date(b.created_at || 0)
+        return tb - ta
+      })
+      setSaved(merged)
     } catch {
-      // ignore
+      setSaved(local)
     }
   }
 
   useEffect(() => {
     loadHistory()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function loadPlan(id: string) {
@@ -176,7 +240,27 @@ function Inner() {
       setAskError(null)
       setAskText('')
       setTab('plan')
+      return
     } catch (e: any) {
+      // ✅ fallback: localStorage load
+      const local = loadLocalPlans().find((p) => p.id === id)
+      if (local?.result) {
+        setSelectedId(id)
+        setResult(local.result)
+
+        const b = normalizeBlocks(local.result?.daily_plan?.[0]?.blocks ?? [])
+        setBlocks(b)
+        setBlockIndex(0)
+        setRunning(false)
+        setSecondsLeft(b[0] ? b[0].minutes * 60 : 25 * 60)
+
+        setAskAnswer(null)
+        setAskError(null)
+        setAskText('')
+        setTab('plan')
+        return
+      }
+
       setError(e?.message ?? 'Error')
     }
   }
@@ -203,8 +287,6 @@ function Inner() {
     try {
       const form = new FormData()
       form.append('prompt', prompt || '')
-
-      // backend expects 'files'
       if (file) form.append('files', file)
 
       const res = await authedFetch('/api/plan', { method: 'POST', body: form })
@@ -213,6 +295,10 @@ function Inner() {
 
       const r = (json?.result ?? null) as PlanResult | null
       if (!r) throw new Error('Server returned no result')
+
+      // ✅ store id if returned
+      const id = typeof json?.id === 'string' ? (json.id as string) : null
+      if (id) setSelectedId(id)
 
       setResult(r)
       setTab('plan')
@@ -226,6 +312,12 @@ function Inner() {
       setAskAnswer(null)
       setAskError(null)
       setAskText('')
+
+      // ✅ Local persistence (serverless-proof)
+      const localId = id || `local_${Date.now()}_${Math.random().toString(16).slice(2)}`
+      const created_at = new Date().toISOString()
+      saveLocalPlan({ id: localId, title: r.title || 'Untitled plan', created_at, result: r })
+      if (!id) setSelectedId(localId)
 
       await loadHistory()
     } catch (e: any) {
@@ -243,7 +335,12 @@ function Inner() {
       if (!res.ok) throw new Error(json?.error ?? 'Failed')
       setSaved([])
       setSelectedId(null)
+      clearLocalPlans()
     } catch (e: any) {
+      // even if server delete fails, clear local so user feels it worked
+      clearLocalPlans()
+      setSaved([])
+      setSelectedId(null)
       setError(e?.message ?? 'Error')
     }
   }
@@ -274,9 +371,8 @@ function Inner() {
     }
   }
 
-  const displayTitle = 'Study plan'
+  const displayTitle = result?.title?.trim() ? result.title : 'Study plan'
   const displayInput = shortPrompt(prompt)
-
   const canGenerate = !loading && (prompt.trim().length >= 6 || !!file)
 
   return (
@@ -447,50 +543,11 @@ function Inner() {
                 </div>
               )}
 
-              {/* DAILY ✅ stable desktop layout */}
+              {/* DAILY ✅ Fix: Pomodoro is TOP by default, RIGHT only at 2XL */}
               {tab === 'daily' && result && (
-                <div className="grid gap-6 items-start min-w-0 xl:grid-cols-[minmax(0,1fr)_360px]">
-                  {/* LEFT */}
-                  <div className="min-w-0 space-y-6">
-                    {(result?.daily_plan ?? []).map((d, di) => (
-                      <section
-                        key={di}
-                        className="w-full rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden"
-                      >
-                        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
-                          <div className="min-w-0">
-                            <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
-                            <div className="mt-2 text-xl font-semibold text-white break-words">{d.focus}</div>
-                          </div>
-
-                          {d.blocks?.length ? (
-                            <HScroll className="w-full md:w-auto md:justify-end -mx-1 px-1 max-w-full">
-                              {d.blocks.map((x, i) => (
-                                <span
-                                  key={i}
-                                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70"
-                                >
-                                  {x.label} {x.minutes}m
-                                </span>
-                              ))}
-                            </HScroll>
-                          ) : null}
-                        </div>
-
-                        <ul className="mt-4 space-y-2 text-sm text-white/80">
-                          {(d.tasks ?? []).map((t, i) => (
-                            <li key={i} className="flex gap-2">
-                              <span className="text-white/40">•</span>
-                              <span className="break-words">{t}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </section>
-                    ))}
-                  </div>
-
-                  {/* RIGHT */}
-                  <aside className="w-full shrink-0 xl:w-[360px] xl:sticky xl:top-6 self-start">
+                <div className="grid gap-6 min-w-0 2xl:grid-cols-[minmax(0,1fr)_360px]">
+                  {/* TIMER (top on mobile + laptop, right on very wide screens) */}
+                  <aside className="order-1 w-full shrink-0 self-start 2xl:order-2 2xl:w-[360px] 2xl:sticky 2xl:top-6">
                     <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden">
                       <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
 
@@ -518,7 +575,9 @@ function Inner() {
                               className="h-full bg-white/50"
                               style={{
                                 width: `${
-                                  activeBlock.minutes > 0 ? 100 - (secondsLeft / (activeBlock.minutes * 60)) * 100 : 0
+                                  activeBlock.minutes > 0
+                                    ? 100 - (secondsLeft / (activeBlock.minutes * 60)) * 100
+                                    : 0
                                 }%`,
                               }}
                             />
@@ -565,6 +624,49 @@ function Inner() {
                       </div>
                     </div>
                   </aside>
+
+                  {/* DAYS */}
+                  <div className="order-2 min-w-0 space-y-6 2xl:order-1">
+                    {(result?.daily_plan ?? []).map((d, di) => (
+                      <section
+                        key={di}
+                        className="w-full rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden"
+                      >
+                        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
+                          <div className="min-w-0">
+                            <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
+
+                            {/* ✅ Fix: don't break long Hungarian words letter-by-letter */}
+                            <div className="mt-2 text-xl font-semibold text-white break-normal hyphens-auto">
+                              {d.focus}
+                            </div>
+                          </div>
+
+                          {d.blocks?.length ? (
+                            <HScroll className="w-full md:w-auto md:justify-end -mx-1 px-1 max-w-full">
+                              {d.blocks.map((x, i) => (
+                                <span
+                                  key={i}
+                                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70"
+                                >
+                                  {x.label} {x.minutes}m
+                                </span>
+                              ))}
+                            </HScroll>
+                          ) : null}
+                        </div>
+
+                        <ul className="mt-4 space-y-2 text-sm text-white/80">
+                          {(d.tasks ?? []).map((t, i) => (
+                            <li key={i} className="flex gap-2">
+                              <span className="text-white/40">•</span>
+                              <span className="break-words">{t}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    ))}
+                  </div>
                 </div>
               )}
 

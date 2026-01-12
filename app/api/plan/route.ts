@@ -28,7 +28,6 @@ async function fileToText(file: File) {
     const parsed = await pdfParse(Buffer.from(arr))
     return parsed.text?.slice(0, 120_000) ?? ''
   }
-
   if (isImage(name, type)) return ''
   return Buffer.from(arr).toString('utf8').slice(0, 120_000)
 }
@@ -230,15 +229,19 @@ async function callModel(
 
 /** ✅ GET /api/plan?id=... : load saved plan */
 export async function GET(req: Request) {
-  const user = await requireUser(req)
-  const { searchParams } = new URL(req.url)
-  const id = searchParams.get('id')
-  if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
+  try {
+    const user = await requireUser(req)
+    const { searchParams } = new URL(req.url)
+    const id = searchParams.get('id')
+    if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
 
-  const row = getPlan(user.id, id)
-  if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    const row = getPlan(user.id, id)
+    if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  return NextResponse.json({ result: row.result })
+    return NextResponse.json({ result: row.result })
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400 })
+  }
 }
 
 /** ✅ POST /api/plan : generate + SAVE */

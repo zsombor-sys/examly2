@@ -34,11 +34,10 @@ type PlanResult = {
 }
 
 type SavedPlan = { id: string; title: string; created_at: string }
-
-// ✅ Local fallback entry (so history works even on serverless)
 type LocalSavedPlan = SavedPlan & { result: PlanResult }
 
 const LS_KEY = 'examly_plans_v1'
+const CURRENT_PLAN_LS_KEY = 'examly_current_plan_id_v1'
 
 function loadLocalPlans(): LocalSavedPlan[] {
   if (typeof window === 'undefined') return []
@@ -67,18 +66,39 @@ function saveLocalPlan(entry: LocalSavedPlan) {
     const curr = loadLocalPlans()
     const next = [entry, ...curr.filter((p) => p.id !== entry.id)].slice(0, 50)
     window.localStorage.setItem(LS_KEY, JSON.stringify(next))
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 function clearLocalPlans() {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.removeItem(LS_KEY)
+  } catch {}
+}
+
+function setCurrentPlanLocal(id: string | null) {
+  if (typeof window === 'undefined') return
+  try {
+    if (!id) window.localStorage.removeItem(CURRENT_PLAN_LS_KEY)
+    else window.localStorage.setItem(CURRENT_PLAN_LS_KEY, id)
+  } catch {}
+}
+
+async function setCurrentPlanRemote(id: string | null) {
+  try {
+    await authedFetch('/api/plan/current', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
   } catch {
-    // ignore
+    // ignore (fallback is local)
   }
+}
+
+async function setCurrentPlan(id: string | null) {
+  setCurrentPlanLocal(id)
+  await setCurrentPlanRemote(id)
 }
 
 function fmtDate(d: string) {
@@ -188,7 +208,6 @@ function Inner() {
   }, [blockIndex])
 
   async function loadHistory() {
-    // Always start from local so UI feels instant
     const local = loadLocalPlans().map(({ id, title, created_at }) => ({ id, title, created_at }))
     try {
       const res = await authedFetch('/api/plan/history')
@@ -199,7 +218,6 @@ function Inner() {
       }
       const serverItems = Array.isArray(json?.items) ? (json.items as SavedPlan[]) : []
 
-      // Merge server + local (keep newest first)
       const byId = new Map<string, SavedPlan>()
       for (const x of [...local, ...serverItems]) {
         if (x?.id) byId.set(x.id, x)
@@ -240,9 +258,10 @@ function Inner() {
       setAskError(null)
       setAskText('')
       setTab('plan')
+
+      await setCurrentPlan(id)
       return
     } catch (e: any) {
-      // ✅ fallback: localStorage load
       const local = loadLocalPlans().find((p) => p.id === id)
       if (local?.result) {
         setSelectedId(id)
@@ -258,6 +277,8 @@ function Inner() {
         setAskError(null)
         setAskText('')
         setTab('plan')
+
+        await setCurrentPlan(id)
         return
       }
 
@@ -296,9 +317,12 @@ function Inner() {
       const r = (json?.result ?? null) as PlanResult | null
       if (!r) throw new Error('Server returned no result')
 
-      // ✅ store id if returned
       const id = typeof json?.id === 'string' ? (json.id as string) : null
+      const localId = id || `local_${Date.now()}_${Math.random().toString(16).slice(2)}`
+      const created_at = new Date().toISOString()
+
       if (id) setSelectedId(id)
+      else setSelectedId(localId)
 
       setResult(r)
       setTab('plan')
@@ -313,12 +337,9 @@ function Inner() {
       setAskError(null)
       setAskText('')
 
-      // ✅ Local persistence (serverless-proof)
-      const localId = id || `local_${Date.now()}_${Math.random().toString(16).slice(2)}`
-      const created_at = new Date().toISOString()
       saveLocalPlan({ id: localId, title: r.title || 'Untitled plan', created_at, result: r })
-      if (!id) setSelectedId(localId)
 
+      await setCurrentPlan(localId)
       await loadHistory()
     } catch (e: any) {
       setError(e?.message ?? 'Error')
@@ -336,11 +357,12 @@ function Inner() {
       setSaved([])
       setSelectedId(null)
       clearLocalPlans()
+      await setCurrentPlan(null)
     } catch (e: any) {
-      // even if server delete fails, clear local so user feels it worked
       clearLocalPlans()
       setSaved([])
       setSelectedId(null)
+      await setCurrentPlan(null)
       setError(e?.message ?? 'Error')
     }
   }
@@ -511,28 +533,6 @@ function Inner() {
                 </div>
               )}
 
-              {/* PLAN */}
-              {tab === 'plan' && result && (
-                <div className="grid gap-6 lg:grid-cols-[1fr_320px] min-w-0">
-                  <section className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Overview</div>
-                    <ul className="mt-3 space-y-2 text-sm text-white/75">
-                      <li>• Daily plan: {result.daily_plan?.length ?? 0} day(s)</li>
-                      <li>• Flashcards: {result.flashcards?.length ?? 0}</li>
-                      <li>• Practice questions: {result.practice_questions?.length ?? 0}</li>
-                      <li>• Notes: generated (see Notes tab)</li>
-                    </ul>
-                  </section>
-
-                  <aside className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
-                    <div className="text-xs uppercase tracking-[0.18em] text-white/55">Tip</div>
-                    <div className="mt-3 text-sm text-white/70">
-                      If your plan feels too generic, upload at least 1 PDF/photo from your material.
-                    </div>
-                  </aside>
-                </div>
-              )}
-
               {/* NOTES */}
               {tab === 'notes' && result && (
                 <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden">
@@ -543,10 +543,9 @@ function Inner() {
                 </div>
               )}
 
-              {/* DAILY ✅ Fix: Pomodoro is TOP by default, RIGHT only at 2XL */}
+              {/* DAILY ✅ Pomodoro top on normal screens, right only at 2XL */}
               {tab === 'daily' && result && (
                 <div className="grid gap-6 min-w-0 2xl:grid-cols-[minmax(0,1fr)_360px]">
-                  {/* TIMER (top on mobile + laptop, right on very wide screens) */}
                   <aside className="order-1 w-full shrink-0 self-start 2xl:order-2 2xl:w-[360px] 2xl:sticky 2xl:top-6">
                     <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden">
                       <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
@@ -625,7 +624,6 @@ function Inner() {
                     </div>
                   </aside>
 
-                  {/* DAYS */}
                   <div className="order-2 min-w-0 space-y-6 2xl:order-1">
                     {(result?.daily_plan ?? []).map((d, di) => (
                       <section
@@ -635,8 +633,6 @@ function Inner() {
                         <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
                           <div className="min-w-0">
                             <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
-
-                            {/* ✅ Fix: don't break long Hungarian words letter-by-letter */}
                             <div className="mt-2 text-xl font-semibold text-white break-normal hyphens-auto">
                               {d.focus}
                             </div>

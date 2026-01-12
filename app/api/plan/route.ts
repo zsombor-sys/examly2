@@ -4,6 +4,7 @@ import { consumeGeneration } from '@/lib/creditsServer'
 import OpenAI from 'openai'
 import pdfParse from 'pdf-parse'
 import { getPlan, savePlan } from '@/app/api/plan/store'
+import { supabaseAdmin } from '@/lib/supabaseServer'
 
 export const runtime = 'nodejs'
 
@@ -68,8 +69,6 @@ function safeParseJson(text: string) {
   }
 
   const repairBackslashesForJson = (s: string) => {
-    // Keep valid escapes: \" \\ \/ \b \f \n \r \t \uXXXX
-    // Repair everything else: \( \) \frac \sqrt -> \\( \\) \\frac \\sqrt
     return s.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
   }
 
@@ -221,13 +220,23 @@ async function callModel(
       { role: 'user', content: userContent as any },
     ],
     temperature: 0.3,
-    response_format: { type: 'json_object' }, // ✅ forces strict JSON object output
+    response_format: { type: 'json_object' },
   })
 
   return resp.choices?.[0]?.message?.content ?? ''
 }
 
-/** ✅ GET /api/plan?id=... : load saved plan */
+// ✅ helper: set current plan best-effort (won't break if table missing)
+async function setCurrentPlanBestEffort(userId: string, planId: string) {
+  try {
+    const sb = supabaseAdmin()
+    await sb.from('plan_current').upsert({ user_id: userId, plan_id: planId }, { onConflict: 'user_id' })
+  } catch {
+    // ignore
+  }
+}
+
+/** GET /api/plan?id=... */
 export async function GET(req: Request) {
   try {
     const user = await requireUser(req)
@@ -244,7 +253,7 @@ export async function GET(req: Request) {
   }
 }
 
-/** ✅ POST /api/plan : generate + SAVE */
+/** POST /api/plan : generate + SAVE + set current */
 export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
@@ -262,6 +271,7 @@ export async function POST(req: Request) {
     if (!openAiKey) {
       const plan = mock(prompt, fileNames)
       const saved = savePlan(user.id, plan.title, plan)
+      await setCurrentPlanBestEffort(user.id, saved.id)
       return NextResponse.json({ id: saved.id, result: plan })
     }
 
@@ -290,6 +300,8 @@ export async function POST(req: Request) {
     const plan = normalizePlan(parsed)
 
     const saved = savePlan(user.id, plan.title, plan)
+    await setCurrentPlanBestEffort(user.id, saved.id)
+
     return NextResponse.json({ id: saved.id, result: plan })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400 })
@@ -313,37 +325,11 @@ function mock(prompt: string, fileNames: string[]) {
 # KÉPLETEK / FORMULAS
 \\[D=b^2-4ac\\]
 \\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]
-
-# LÉPÉSEK / METHOD
-1. Azonosítsd: \\(a,b,c\\)
-2. Számold ki: \\(D\\)
-3. Állapítsd meg a gyökök számát \\(D\\) alapján
-4. Számold ki \\(x_1\\), \\(x_2\\)
-
-# PÉLDA
-Oldd meg: \\(x^2-5x+6=0\\)
-\\[D=(-5)^2-4\\cdot1\\cdot6=25-24=1\\]
-\\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3,\\ x_2=2\\]
-
-# GYAKORI HIBÁK / COMMON MISTAKES
-- Elfelejted a \\(2a\\)-t a nevezőben.
-
-# GYORS ELLENŐRZŐLISTA / CHECKLIST
-- Megvan \\(a,b,c\\)?
-- Megvan \\(D\\)?
-- Helyes a nevező: \\(2a\\)?
 `
         : `# DEFINITIONS
 - Quadratic: \\(ax^2+bx+c=0\\), \\(a\\neq0\\)
-
-# FORMULAS
-\\[D=b^2-4ac\\]
-\\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]
 `,
-    flashcards: [
-      { front: 'Diszkrimináns', back: 'D = b^2 - 4ac' },
-      { front: 'Gyökképlet', back: 'x = (-b ± √D) / (2a)' },
-    ],
+    flashcards: [{ front: 'Diszkrimináns', back: 'D = b^2 - 4ac' }],
     daily_plan: [
       {
         day: '1. nap',
@@ -358,17 +344,7 @@ Oldd meg: \\(x^2-5x+6=0\\)
         ],
       },
     ],
-    practice_questions: [
-      {
-        id: 'q1',
-        type: 'short',
-        question: 'Oldd meg: \\(x^2-5x+6=0\\).',
-        options: null,
-        answer: 'x=2 és x=3',
-        explanation:
-          '\\[D=(-5)^2-4\\cdot1\\cdot6=1\\]\\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3,\\ x_2=2\\]',
-      },
-    ],
+    practice_questions: [],
     notes: ['Add OPENAI_API_KEY to enable real generation.'],
   })
 }

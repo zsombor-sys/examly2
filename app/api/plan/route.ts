@@ -3,6 +3,7 @@ import { requireUser } from '@/lib/authServer'
 import { consumeGeneration } from '@/lib/creditsServer'
 import OpenAI from 'openai'
 import pdfParse from 'pdf-parse'
+import { getPlan, savePlan } from '@/app/api/plan/store'
 
 export const runtime = 'nodejs'
 
@@ -28,11 +29,7 @@ async function fileToText(file: File) {
     return parsed.text?.slice(0, 120_000) ?? ''
   }
 
-  if (isImage(name, type)) {
-    // images are handled via vision (base64), no text extraction here
-    return ''
-  }
-
+  if (isImage(name, type)) return ''
   return Buffer.from(arr).toString('utf8').slice(0, 120_000)
 }
 
@@ -62,16 +59,6 @@ const OUTPUT_TEMPLATE = {
   notes: [] as string[],
 }
 
-/**
- * ✅ FIX: Robust JSON parsing
- * - model sometimes outputs invalid JSON due to single backslashes in LaTeX
- * - or extra text around the JSON
- *
- * Strategy:
- * 1) try JSON.parse directly
- * 2) extract first {...} block, parse
- * 3) repair invalid backslashes (turn \x into \\x unless it's a valid JSON escape), parse
- */
 function safeParseJson(text: string) {
   const raw = String(text ?? '')
   if (!raw.trim()) throw new Error('Model returned empty response (no JSON).')
@@ -83,7 +70,7 @@ function safeParseJson(text: string) {
 
   const repairBackslashesForJson = (s: string) => {
     // Keep valid escapes: \" \\ \/ \b \f \n \r \t \uXXXX
-    // Repair everything else (like \( \) \frac \sqrt) into \\( \\) \\frac \\sqrt so JSON.parse won't crash
+    // Repair everything else: \( \) \frac \sqrt -> \\( \\) \\frac \\sqrt
     return s.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
   }
 
@@ -100,7 +87,7 @@ function safeParseJson(text: string) {
   try {
     return JSON.parse(repaired)
   } catch {
-    const snippet = repaired.slice(0, 500)
+    const snippet = repaired.slice(0, 700)
     throw new Error(`Model did not return valid JSON (after repair). Snippet:\n${snippet}`)
   }
 }
@@ -154,7 +141,6 @@ function normalizePlan(obj: any) {
 
   out.notes = Array.isArray(out.notes) ? out.notes.map((x: any) => String(x)) : []
 
-  // Ensure minimum content so UI never "dies"
   if (!out.title) out.title = 'Untitled plan'
   if (!out.quick_summary) out.quick_summary = 'No summary generated.'
   if (!out.study_notes) out.study_notes = 'No notes generated.'
@@ -163,7 +149,6 @@ function normalizePlan(obj: any) {
 }
 
 function buildSystemPrompt() {
-  // Keep it strict + readable. JSON validity is enforced by response_format below.
   return `
 You are Examly.
 
@@ -182,30 +167,31 @@ Return ONLY a JSON object that matches this shape:
 }
 
 LANGUAGE:
-- If the user prompt is Hungarian (or mentions Hungarian school terms), output Hungarian and set language="Hungarian".
-- Otherwise output English and set language="English".
+- If the user prompt is Hungarian, output Hungarian and set language="Hungarian". Otherwise English.
 
-STYLE (school notebook / textbook):
-- Clean headings, short bullets, step-by-step explanations.
-- Avoid chatty filler.
+STYLE:
+- Write like a school notebook/textbook.
+- Clean headings, short bullets, step-by-step.
+- No chatty filler.
 
-MATH (KaTeX in Markdown):
-- Use inline \\( ... \\) and block \\[ ... \\]
+MATH (KaTeX):
+- Inline \\( ... \\)
+- Block \\[ ... \\]
 - Prefer \\frac, \\sqrt, \\cdot
-- Do not use $$
+- No $$
 
-STUDY_NOTES STRUCTURE (use these headings):
-1) # FOGALMAK / DEFINITIONS
-2) # KÉPLETEK / FORMULAS
-3) # LÉPÉSEK / METHOD
-4) # PÉLDA
-5) # GYAKORI HIBÁK / COMMON MISTAKES
-6) # GYORS ELLENŐRZŐLISTA / CHECKLIST
+STUDY_NOTES headings:
+# FOGALMAK / DEFINITIONS
+# KÉPLETEK / FORMULAS
+# LÉPÉSEK / METHOD
+# PÉLDA
+# GYAKORI HIBÁK / COMMON MISTAKES
+# GYORS ELLENŐRZŐLISTA / CHECKLIST
 
 DAILY_PLAN:
-- focus max ~8 words
-- tasks max ~12 words each
-- blocks typical pomodoro: 25/5/25/10, max 8 blocks/day
+- focus <= ~8 words
+- tasks <= ~12 words each
+- blocks typical pomodoro: 25/5/25/10, max 8/day
 `.trim()
 }
 
@@ -219,10 +205,7 @@ async function callModel(
   const sys = buildSystemPrompt()
 
   const userContent: any[] = [
-    {
-      type: 'text',
-      text: `USER PROMPT:\n${prompt || '(empty)'}\n\nFILES TEXT:\n${textFromFiles || '(none)'}`,
-    },
+    { type: 'text', text: `USER PROMPT:\n${prompt || '(empty)'}\n\nFILES TEXT:\n${textFromFiles || '(none)'}` },
   ]
 
   for (const img of images.slice(0, 6)) {
@@ -239,14 +222,26 @@ async function callModel(
       { role: 'user', content: userContent as any },
     ],
     temperature: 0.3,
-
-    // ✅ MAIN FIX: force strict JSON output, no extra text allowed
-    response_format: { type: 'json_object' },
+    response_format: { type: 'json_object' }, // ✅ forces strict JSON object output
   })
 
   return resp.choices?.[0]?.message?.content ?? ''
 }
 
+/** ✅ GET /api/plan?id=... : load saved plan */
+export async function GET(req: Request) {
+  const user = await requireUser(req)
+  const { searchParams } = new URL(req.url)
+  const id = searchParams.get('id')
+  if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
+
+  const row = getPlan(user.id, id)
+  if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  return NextResponse.json({ result: row.result })
+}
+
+/** ✅ POST /api/plan : generate + SAVE */
 export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
@@ -255,7 +250,6 @@ export async function POST(req: Request) {
     const form = await req.formData()
     const prompt = String(form.get('prompt') ?? '')
 
-    // accept both 'files' and 'file'
     const files = [...(form.getAll('files') as File[]), ...(form.getAll('file') as File[])]
       .filter(Boolean) as File[]
 
@@ -263,7 +257,9 @@ export async function POST(req: Request) {
 
     const openAiKey = process.env.OPENAI_API_KEY
     if (!openAiKey) {
-      return NextResponse.json({ result: mock(prompt, fileNames) })
+      const plan = mock(prompt, fileNames)
+      const saved = savePlan(user.id, plan.title, plan)
+      return NextResponse.json({ id: saved.id, result: plan })
     }
 
     const client = new OpenAI({ apiKey: openAiKey })
@@ -290,7 +286,8 @@ export async function POST(req: Request) {
     const parsed = safeParseJson(raw)
     const plan = normalizePlan(parsed)
 
-    return NextResponse.json({ result: plan })
+    const saved = savePlan(user.id, plan.title, plan)
+    return NextResponse.json({ id: saved.id, result: plan })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400 })
   }
@@ -307,27 +304,33 @@ function mock(prompt: string, fileNames: string[]) {
     quick_summary: `Mock response so you can test the UI.\n\nPrompt: ${prompt || '(empty)'}\nUploads: ${fileNames.join(', ') || '(none)'}`,
     study_notes:
       lang === 'Hungarian'
-        ? `# FOGALMAK (mock)
+        ? `# FOGALMAK / DEFINITIONS
 - Másodfokú egyenlet: \\(ax^2+bx+c=0\\), \\(a\\neq 0\\)
 
-# KÉPLETEK (mock)
+# KÉPLETEK / FORMULAS
 \\[D=b^2-4ac\\]
 \\[x_{1,2}=\\frac{-b\\pm\\sqrt{D}}{2a}\\]
 
-# LÉPÉSEK
+# LÉPÉSEK / METHOD
 1. Azonosítsd: \\(a,b,c\\)
 2. Számold ki: \\(D\\)
-3. Számold ki a gyököket a képlettel
+3. Állapítsd meg a gyökök számát \\(D\\) alapján
+4. Számold ki \\(x_1\\), \\(x_2\\)
 
 # PÉLDA
 Oldd meg: \\(x^2-5x+6=0\\)
 \\[D=(-5)^2-4\\cdot1\\cdot6=25-24=1\\]
 \\[x_{1,2}=\\frac{5\\pm1}{2}\\Rightarrow x_1=3,\\ x_2=2\\]
 
-# GYAKORI HIBÁK
+# GYAKORI HIBÁK / COMMON MISTAKES
 - Elfelejted a \\(2a\\)-t a nevezőben.
+
+# GYORS ELLENŐRZŐLISTA / CHECKLIST
+- Megvan \\(a,b,c\\)?
+- Megvan \\(D\\)?
+- Helyes a nevező: \\(2a\\)?
 `
-        : `# DEFINITIONS (mock)
+        : `# DEFINITIONS
 - Quadratic: \\(ax^2+bx+c=0\\), \\(a\\neq0\\)
 
 # FORMULAS

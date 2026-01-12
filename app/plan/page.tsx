@@ -428,45 +428,123 @@ function Inner() {
               )}
 
               {/* DAILY ✅ Fix: only 2 columns from XL, so laptop doesn't squeeze left column */}
-              {tab === 'daily' && result && (
-                <div className="grid gap-6 items-start min-w-0 xl:grid-cols-[minmax(0,1fr)_360px]">
-                  <div className="space-y-6 min-w-0">
-                    {(result?.daily_plan ?? []).map((d, di) => (
-                      <section
-                        key={di}
-                        className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden"
-                      >
-                        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
-                          <div className="min-w-0">
-                            <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
-                            <div className="mt-2 text-xl font-semibold text-white break-words">{d.focus}</div>
-                          </div>
+              {/* DAILY ✅ desktop fix: 2 oszlop csak XL-től, jobb oldalt fix 360px, sticky stabil */}
+{tab === 'daily' && result && (
+  <div className="grid gap-6 items-start min-w-0 xl:grid-cols-[minmax(0,1fr)_360px]">
+    {/* LEFT */}
+    <div className="min-w-0 space-y-6">
+      {(result?.daily_plan ?? []).map((d, di) => (
+        <section
+          key={di}
+          className="w-full rounded-3xl border border-white/10 bg-white/[0.02] p-5 min-w-0 overflow-hidden"
+        >
+          <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between min-w-0">
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-[0.18em] text-white/55">{d.day}</div>
+              <div className="mt-2 text-xl font-semibold text-white break-words">{d.focus}</div>
+            </div>
 
-                          {d.blocks?.length ? (
-                            <HScroll className="w-full md:w-auto md:justify-end -mx-1 px-1">
-                              {d.blocks.map((x, i) => (
-                                <span
-                                  key={i}
-                                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70"
-                                >
-                                  {x.label} {x.minutes}m
-                                </span>
-                              ))}
-                            </HScroll>
-                          ) : null}
-                        </div>
+            {d.blocks?.length ? (
+              <HScroll className="w-full md:w-auto md:justify-end -mx-1 px-1 max-w-full">
+                {d.blocks.map((x, i) => (
+                  <span
+                    key={i}
+                    className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70"
+                  >
+                    {x.label} {x.minutes}m
+                  </span>
+                ))}
+              </HScroll>
+            ) : null}
+          </div>
 
-                        <ul className="mt-4 space-y-2 text-sm text-white/80">
-                          {(d.tasks ?? []).map((t, i) => (
-                            <li key={i} className="flex gap-2">
-                              <span className="text-white/40">•</span>
-                              <span className="break-words">{t}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </section>
-                    ))}
-                  </div>
+          <ul className="mt-4 space-y-2 text-sm text-white/80">
+            {(d.tasks ?? []).map((t, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-white/40">•</span>
+                <span className="break-words">{t}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+
+    {/* RIGHT */}
+    <aside className="w-full shrink-0 xl:w-[360px] xl:sticky xl:top-6 self-start">
+      <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden">
+        <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
+
+        <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 overflow-hidden">
+          <div className="flex items-start justify-between gap-3 min-w-0">
+            <div className="min-w-0">
+              <div className="text-xs text-white/55">Session</div>
+              <div className="mt-1 text-lg font-semibold leading-snug text-white break-words">
+                {activeBlock ? activeBlock.label : 'No blocks'}
+              </div>
+              <div className="mt-1 text-sm text-white/60">Focus time</div>
+            </div>
+
+            <div className="text-right shrink-0 min-w-[110px]">
+              <div className="text-xs uppercase tracking-[0.18em] text-white/55">Timer</div>
+              <div className="mt-1 text-3xl font-semibold tabular-nums text-white">
+                {secondsToMMSS(secondsLeft)}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/5">
+            {activeBlock ? (
+              <div
+                className="h-full bg-white/50"
+                style={{
+                  width: `${
+                    activeBlock.minutes > 0 ? 100 - (secondsLeft / (activeBlock.minutes * 60)) * 100 : 0
+                  }%`,
+                }}
+              />
+            ) : null}
+          </div>
+
+          <HScroll className="mt-4 -mx-1 px-1 max-w-full">
+            <Button onClick={() => setRunning((v) => !v)} disabled={!activeBlock} className="shrink-0 gap-2">
+              {running ? <Pause size={16} /> : <Play size={16} />}
+              {running ? 'Pause' : 'Start'}
+            </Button>
+
+            <Button
+              variant="ghost"
+              onClick={() => {
+                if (!activeBlock) return
+                setRunning(false)
+                setSecondsLeft(activeBlock.minutes * 60)
+              }}
+              className="shrink-0 gap-2"
+              disabled={!activeBlock}
+            >
+              <RotateCcw size={16} />
+              Reset
+            </Button>
+
+            <Button
+              variant="ghost"
+              onClick={() => setBlockIndex((i) => Math.min(i + 1, Math.max(0, blocks.length - 1)))}
+              className="shrink-0"
+              disabled={blocks.length === 0 || blockIndex >= blocks.length - 1}
+            >
+              Next
+            </Button>
+          </HScroll>
+
+          <div className="mt-3 text-xs text-white/50">
+            Block {blocks.length ? blockIndex + 1 : 0}/{blocks.length || 0}
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+)}
+
 
                   <aside className="shrink-0 w-full rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden xl:w-[360px] xl:sticky xl:top-6 self-start">
                     <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>

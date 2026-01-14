@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Play, Pause, RotateCcw, SkipForward, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui'
 import HScroll from '@/components/HScroll'
-import { Play, Pause, RotateCcw, SkipForward, CalendarDays } from 'lucide-react'
 
 type Block = { type: 'study' | 'break'; minutes: number; label: string }
 type DayPlan = { day: string; focus: string; tasks: string[]; minutes: number; blocks?: Block[] }
@@ -12,122 +12,44 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n))
 }
 
-function normalizeBlocks(blocks?: Block[]) {
-  if (!blocks?.length) return []
-  return blocks
-    .filter((b) => b && Number.isFinite(b.minutes))
-    .map((b) => ({
-      type: b.type === 'break' ? 'break' : 'study',
-      minutes: clamp(Math.round(b.minutes), 1, 240),
-      label: (b.label || '').trim() || (b.type === 'break' ? 'Break' : 'Focus'),
-    }))
-}
-
 function secondsToMMSS(s: number) {
   const mm = Math.floor(s / 60)
   const ss = s % 60
   return `${mm}:${String(ss).padStart(2, '0')}`
 }
 
-/**
- * Elegant mini confetti (no deps)
- * intensity:
- *  - "block" (small)
- *  - "day"   (medium)
- *  - "end"   (big)
- */
-function burstConfetti(canvas: HTMLCanvasElement, intensity: 'block' | 'day' | 'end') {
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
+function normalizeBlocks(blocks?: Block[]) {
+  if (!blocks?.length) return []
+  return blocks
+    .filter((b) => b && Number.isFinite(b.minutes))
+    .map((b) => ({
+      type: b.type === 'break' ? 'break' : 'study',
+      minutes: clamp(Math.round(Number(b.minutes)), 1, 120),
+      label: (b.label || '').trim() || (b.type === 'break' ? 'Break' : 'Focus'),
+    }))
+}
 
-  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1))
-  const rect = canvas.getBoundingClientRect()
-  canvas.width = Math.floor(rect.width * dpr)
-  canvas.height = Math.floor(rect.height * dpr)
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+type Particle = {
+  x: number
+  y: number
+  vx: number
+  vy: number
+  size: number
+  rot: number
+  vr: number
+  life: number
+  maxLife: number
+  shape: 'rect' | 'circle'
+  color: string
+  alpha: number
+}
 
-  const W = rect.width
-  const H = rect.height
+function pick<T>(arr: T[]) {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
 
-  const palette = [
-    'rgba(255,255,255,0.95)',
-    'rgba(255,255,255,0.75)',
-    'rgba(255,255,255,0.55)',
-  ]
-
-  const cfg =
-    intensity === 'block'
-      ? { n: 70, dur: 900, spread: 0.9, speed: 1.0 }
-      : intensity === 'day'
-      ? { n: 110, dur: 1100, spread: 1.05, speed: 1.15 }
-      : { n: 170, dur: 1400, spread: 1.2, speed: 1.35 }
-
-  const rand = (a: number, b: number) => a + Math.random() * (b - a)
-
-  // launch from two “soft cannons”
-  const particles = Array.from({ length: cfg.n }).map(() => {
-    const side = Math.random() < 0.5 ? 'left' : 'right'
-    const x = side === 'left' ? rand(30, W * 0.35) : rand(W * 0.65, W - 30)
-    const y = rand(H * 0.18, H * 0.4)
-
-    const baseVx = rand(-2.2, 2.2) * cfg.spread * cfg.speed
-    const baseVy = rand(-6.8, -3.4) * cfg.speed
-
-    return {
-      x,
-      y,
-      vx: baseVx,
-      vy: baseVy,
-      g: rand(0.12, 0.24) * cfg.speed,
-      rot: rand(0, Math.PI * 2),
-      vrot: rand(-0.18, 0.18),
-      w: rand(6, 12) * (intensity === 'end' ? 1.05 : 1.0),
-      h: rand(2, 6),
-      a: 1,
-      va: rand(0.010, 0.018) * (intensity === 'end' ? 0.85 : 1.0),
-      c: palette[Math.floor(Math.random() * palette.length)],
-    }
-  })
-
-  const start = performance.now()
-  const dur = cfg.dur
-
-  const step = (t: number) => {
-    const p = clamp((t - start) / dur, 0, 1)
-    ctx.clearRect(0, 0, W, H)
-
-    for (const q of particles) {
-      q.vy += q.g
-      q.x += q.vx
-      q.y += q.vy
-      q.rot += q.vrot
-      q.a = Math.max(0, q.a - q.va)
-
-      ctx.save()
-      ctx.globalAlpha = q.a
-      ctx.translate(q.x, q.y)
-      ctx.rotate(q.rot)
-      ctx.fillStyle = q.c
-      ctx.fillRect(-q.w / 2, -q.h / 2, q.w, q.h)
-      ctx.restore()
-    }
-
-    // soft glow haze, stronger on end
-    ctx.save()
-    const haze = intensity === 'end' ? 0.085 : intensity === 'day' ? 0.065 : 0.05
-    ctx.globalAlpha = haze * (1 - p)
-    const grd = ctx.createRadialGradient(W / 2, H / 3, 0, W / 2, H / 3, Math.max(W, H) * 0.75)
-    grd.addColorStop(0, '#ffffff')
-    grd.addColorStop(1, 'rgba(255,255,255,0)')
-    ctx.fillStyle = grd
-    ctx.fillRect(0, 0, W, H)
-    ctx.restore()
-
-    if (p < 1) requestAnimationFrame(step)
-    else ctx.clearRect(0, 0, W, H)
-  }
-
-  requestAnimationFrame(step)
+function rand(min: number, max: number) {
+  return Math.random() * (max - min) + min
 }
 
 export default function Pomodoro({
@@ -137,50 +59,195 @@ export default function Pomodoro({
   dailyPlan: DayPlan[]
   className?: string
 }) {
-  const dayBlocks = useMemo(() => {
-    return (dailyPlan ?? []).map((d) => normalizeBlocks(d?.blocks ?? []))
+  // ----- normalize days (blocks)
+  const days = useMemo(() => {
+    const src = Array.isArray(dailyPlan) ? dailyPlan : []
+    return src.map((d, i) => {
+      const blocks = normalizeBlocks(d?.blocks)
+      return {
+        dayLabel: String(d?.day ?? `Day ${i + 1}`),
+        focus: String(d?.focus ?? ''),
+        blocks,
+      }
+    })
   }, [dailyPlan])
 
-  const totalDays = dayBlocks.length
+  const hasAnyBlocks = useMemo(() => days.some((d) => d.blocks.length > 0), [days])
 
+  // ----- timer state
   const [activeDayIndex, setActiveDayIndex] = useState(0)
   const [activeBlockIndex, setActiveBlockIndex] = useState(0)
   const [running, setRunning] = useState(false)
   const [secondsLeft, setSecondsLeft] = useState(25 * 60)
 
   const tickRef = useRef<number | null>(null)
+
+  const activeDay = days[activeDayIndex] ?? null
+  const activeBlock = activeDay?.blocks?.[activeBlockIndex] ?? null
+
+  // ----- confetti canvas
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const particlesRef = useRef<Particle[]>([])
+  const animRef = useRef<number | null>(null)
+  const lastTRef = useRef<number>(0)
 
-  const blocks = dayBlocks[activeDayIndex] ?? []
-  const activeBlock = blocks[activeBlockIndex] ?? null
-  const phase: 'focus' | 'break' = activeBlock?.type === 'break' ? 'break' : 'focus'
+  const resizeCanvas = () => {
+    const c = canvasRef.current
+    if (!c) return
+    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1))
+    c.width = Math.floor(window.innerWidth * dpr)
+    c.height = Math.floor(window.innerHeight * dpr)
+    c.style.width = `${window.innerWidth}px`
+    c.style.height = `${window.innerHeight}px`
+    const ctx = c.getContext('2d')
+    if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
 
-  // init to day1/block1
   useEffect(() => {
-    setActiveDayIndex(0)
-    setActiveBlockIndex(0)
-    setRunning(false)
+    resizeCanvas()
+    window.addEventListener('resize', resizeCanvas)
+    return () => window.removeEventListener('resize', resizeCanvas)
+  }, [])
 
-    const first = dayBlocks[0]?.[0]
-    setSecondsLeft(first ? first.minutes * 60 : 25 * 60)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalDays])
+  const fireConfetti = (mode: 'block' | 'day' | 'end' = 'block') => {
+    // full-screen, visible, lots of particles
+    const c = canvasRef.current
+    if (!c) return
 
-  // when selecting new day/block, reset timer to that block
-  useEffect(() => {
-    if (!activeBlock) {
-      setSecondsLeft(25 * 60)
-      setRunning(false)
-      return
+    const base = mode === 'block' ? 140 : mode === 'day' ? 220 : 360
+    const gravity = mode === 'block' ? 900 : mode === 'day' ? 1050 : 1250
+    const spread = mode === 'block' ? 520 : mode === 'day' ? 720 : 920
+
+    const colors = [
+      '#ffffff',
+      '#a3ffea',
+      '#ffd9a3',
+      '#ffb3d9',
+      '#b3c7ff',
+      '#d7ff8a',
+      '#ff8ad7',
+      '#8affff',
+      '#ffe98a',
+    ]
+
+    const cx = window.innerWidth * 0.5
+    const cy = window.innerHeight * 0.35
+
+    for (let i = 0; i < base; i++) {
+      const angle = rand(-Math.PI, 0) // shoot upward
+      const speed = rand(spread * 0.35, spread)
+      const vx = Math.cos(angle) * speed * rand(0.6, 1.05)
+      const vy = Math.sin(angle) * speed * rand(0.75, 1.1)
+
+      particlesRef.current.push({
+        x: cx + rand(-30, 30),
+        y: cy + rand(-25, 25),
+        vx,
+        vy,
+        size: rand(3, mode === 'end' ? 8 : 6),
+        rot: rand(0, Math.PI * 2),
+        vr: rand(-8, 8),
+        life: 0,
+        maxLife: rand(mode === 'block' ? 900 : 1200, mode === 'end' ? 1900 : 1500),
+        shape: Math.random() < 0.25 ? 'circle' : 'rect',
+        color: pick(colors),
+        alpha: 1,
+      })
     }
-    setSecondsLeft(activeBlock.minutes * 60)
+
+    if (animRef.current == null) {
+      lastTRef.current = performance.now()
+      animRef.current = window.requestAnimationFrame(stepAnim(gravity))
+    }
+  }
+
+  const stepAnim =
+    (gravity: number) =>
+    (t: number) => {
+      const c = canvasRef.current
+      if (!c) {
+        animRef.current = null
+        return
+      }
+      const ctx = c.getContext('2d')
+      if (!ctx) {
+        animRef.current = null
+        return
+      }
+
+      const dt = Math.min(0.033, (t - lastTRef.current) / 1000)
+      lastTRef.current = t
+
+      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight)
+
+      const next: Particle[] = []
+      for (const p of particlesRef.current) {
+        p.life += dt * 1000
+        if (p.life >= p.maxLife) continue
+
+        // physics
+        p.vy += gravity * dt
+        p.vx *= 0.995
+        p.vy *= 0.995
+
+        p.x += p.vx * dt
+        p.y += p.vy * dt
+        p.rot += p.vr * dt
+
+        // fade out near end
+        const k = 1 - p.life / p.maxLife
+        p.alpha = clamp(k * 1.2, 0, 1)
+
+        // draw
+        ctx.save()
+        ctx.globalAlpha = p.alpha
+        ctx.translate(p.x, p.y)
+        ctx.rotate(p.rot)
+        ctx.fillStyle = p.color
+
+        if (p.shape === 'circle') {
+          ctx.beginPath()
+          ctx.arc(0, 0, p.size * 0.6, 0, Math.PI * 2)
+          ctx.fill()
+        } else {
+          ctx.fillRect(-p.size, -p.size * 0.5, p.size * 2, p.size)
+        }
+
+        ctx.restore()
+
+        next.push(p)
+      }
+
+      particlesRef.current = next
+
+      if (particlesRef.current.length > 0) {
+        animRef.current = window.requestAnimationFrame(stepAnim(gravity))
+      } else {
+        animRef.current = null
+      }
+    }
+
+  // ----- initialize: start at Day 1, first available block
+  useEffect(() => {
+    if (!hasAnyBlocks) return
+
+    // pick first day that has blocks
+    const firstDay = days.findIndex((d) => d.blocks.length > 0)
+    const di = firstDay >= 0 ? firstDay : 0
+
+    setActiveDayIndex(di)
+    setActiveBlockIndex(0)
+
+    const b = days[di]?.blocks?.[0]
+    setSecondsLeft((b?.minutes ?? 25) * 60)
     setRunning(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDayIndex, activeBlockIndex])
+  }, [hasAnyBlocks])
 
-  // ticking
+  // ----- ticking
   useEffect(() => {
     if (!running) return
+    if (!activeBlock) return
 
     tickRef.current = window.setInterval(() => {
       setSecondsLeft((s) => (s <= 1 ? 0 : s - 1))
@@ -190,51 +257,52 @@ export default function Pomodoro({
       if (tickRef.current) window.clearInterval(tickRef.current)
       tickRef.current = null
     }
-  }, [running])
+  }, [running, activeBlock])
 
-  // auto-advance at 0
+  // ----- when block ends: confetti + auto advance (block -> block, day -> day)
   useEffect(() => {
     if (!running) return
+    if (!activeBlock) return
     if (secondsLeft !== 0) return
 
-    setRunning(false)
+    // ALWAYS confetti on every block end (study + break)
+    fireConfetti('block')
 
-    const blocksHere = dayBlocks[activeDayIndex] ?? []
-    const isLastBlockOfDay = blocksHere.length > 0 && activeBlockIndex >= blocksHere.length - 1
-    const isLastDay = totalDays > 0 && activeDayIndex >= totalDays - 1
+    const currDay = days[activeDayIndex]
+    const currBlocks = currDay?.blocks ?? []
 
-    // ✅ ALWAYS confetti on block end (small), and bigger on day/end
-    const intensity: 'block' | 'day' | 'end' =
-      isLastBlockOfDay && isLastDay ? 'end' : isLastBlockOfDay ? 'day' : 'block'
+    const nextBlockIndex = activeBlockIndex + 1
 
-    if (canvasRef.current) burstConfetti(canvasRef.current, intensity)
+    // if next block exists in same day: go there and keep running
+    if (nextBlockIndex < currBlocks.length) {
+      const nb = currBlocks[nextBlockIndex]
+      setActiveBlockIndex(nextBlockIndex)
+      setSecondsLeft((nb?.minutes ?? 25) * 60)
+      // keep running true
+      return
+    }
 
-    // advance after small pause
-    const t = window.setTimeout(() => {
-      const nextBlock = activeBlockIndex + 1
+    // day finished: jump to next day that has blocks
+    fireConfetti('day')
 
-      // next block same day
-      if (nextBlock < blocksHere.length) {
-        setActiveBlockIndex(nextBlock)
-        setRunning(true)
-        return
-      }
+    let di = activeDayIndex + 1
+    while (di < days.length && (days[di]?.blocks?.length ?? 0) === 0) di++
 
-      // next day
-      const nextDay = activeDayIndex + 1
-      if (nextDay < totalDays) {
-        setActiveDayIndex(nextDay)
-        setActiveBlockIndex(0)
-        setRunning(true)
-        return
-      }
-
-      // plan finished
+    // if no more days: finale and stop
+    if (di >= days.length) {
+      fireConfetti('end')
       setRunning(false)
-    }, 220)
+      return
+    }
 
-    return () => window.clearTimeout(t)
-  }, [secondsLeft, running, activeDayIndex, activeBlockIndex, dayBlocks, totalDays])
+    // jump day
+    setActiveDayIndex(di)
+    setActiveBlockIndex(0)
+    const first = days[di]?.blocks?.[0]
+    setSecondsLeft((first?.minutes ?? 25) * 60)
+    // keep running true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secondsLeft, running])
 
   const progressPct = useMemo(() => {
     if (!activeBlock) return 0
@@ -243,159 +311,155 @@ export default function Pomodoro({
     return clamp(100 - (secondsLeft / total) * 100, 0, 100)
   }, [activeBlock, secondsLeft])
 
-  const canStart = !!activeBlock
-  const dayLabel = dailyPlan?.[activeDayIndex]?.day || `Day ${activeDayIndex + 1}`
-  const focusLabel = dailyPlan?.[activeDayIndex]?.focus || ''
-
-  function jumpToDay(di: number) {
+  const jumpToDay = (di: number) => {
+    const d = days[di]
+    if (!d || d.blocks.length === 0) return
     setRunning(false)
     setActiveDayIndex(di)
     setActiveBlockIndex(0)
+    setSecondsLeft((d.blocks[0]?.minutes ?? 25) * 60)
   }
 
-  function nextBlock() {
-    const blocksHere = dayBlocks[activeDayIndex] ?? []
-    if (!blocksHere.length) return
-    setRunning(false)
-    setActiveBlockIndex((i) => Math.min(i + 1, blocksHere.length - 1))
-  }
-
-  function nextDay() {
-    if (activeDayIndex >= totalDays - 1) return
-    setRunning(false)
-    setActiveDayIndex((d) => Math.min(d + 1, totalDays - 1))
-    setActiveBlockIndex(0)
-  }
-
-  function resetBlock() {
+  const resetBlock = () => {
     if (!activeBlock) return
     setRunning(false)
     setSecondsLeft(activeBlock.minutes * 60)
   }
 
-  // optional: manual “celebrate” click on timer title (fun but subtle)
-  function manualPop() {
-    if (!canvasRef.current) return
-    burstConfetti(canvasRef.current, 'block')
+  const skipToNext = () => {
+    if (!activeDay) return
+    const currBlocks = activeDay.blocks ?? []
+    const nextBlockIndex = activeBlockIndex + 1
+    if (nextBlockIndex < currBlocks.length) {
+      setRunning(false)
+      setActiveBlockIndex(nextBlockIndex)
+      setSecondsLeft((currBlocks[nextBlockIndex]?.minutes ?? 25) * 60)
+      return
+    }
+    // go next day
+    let di = activeDayIndex + 1
+    while (di < days.length && (days[di]?.blocks?.length ?? 0) === 0) di++
+    if (di >= days.length) return
+    setRunning(false)
+    setActiveDayIndex(di)
+    setActiveBlockIndex(0)
+    setSecondsLeft((days[di]?.blocks?.[0]?.minutes ?? 25) * 60)
   }
 
   return (
-    <div className={['relative', className].join(' ')}>
+    <div className={className}>
+      {/* full-screen confetti canvas */}
       <canvas
         ref={canvasRef}
-        className="pointer-events-none absolute inset-0 z-[1] h-full w-full"
+        className="pointer-events-none fixed inset-0 z-[9999]"
         aria-hidden="true"
       />
 
-      <div className="relative z-[2] rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden">
-        <div className="flex items-start justify-between gap-3 min-w-0">
-          <div className="min-w-0">
-            <button
-              type="button"
-              onClick={manualPop}
-              className="text-left"
-              title="✨"
-            >
-              <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
-            </button>
+      <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs uppercase tracking-[0.18em] text-white/55">Pomodoro</div>
 
-            <div className="mt-2 text-sm text-white/60">
-              <span className="inline-flex items-center gap-2">
-                <CalendarDays size={14} />
-                <span className="text-white/80 font-medium">{dayLabel}</span>
-                <span className="text-white/40">
-                  ({totalDays ? activeDayIndex + 1 : 0}/{totalDays || 0})
-                </span>
-              </span>
-            </div>
-
-            {focusLabel ? <div className="mt-1 text-xs text-white/50 line-clamp-1">{focusLabel}</div> : null}
-          </div>
-
-          <div className="text-right shrink-0 min-w-[122px]">
-            <div className="text-xs uppercase tracking-[0.18em] text-white/55">{phase === 'break' ? 'Break' : 'Focus'}</div>
-            <div className="mt-1 text-3xl font-semibold tabular-nums text-white">
-              {secondsToMMSS(secondsLeft)}
-            </div>
-          </div>
+          <button
+            onClick={() => fireConfetti('block')}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70 hover:bg-white/10"
+            title="Test confetti"
+          >
+            <Sparkles size={14} />
+            Confetti
+          </button>
         </div>
 
-        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/5">
-          <div className="h-full bg-white/50" style={{ width: `${progressPct}%` }} />
+        {/* Day jump pills */}
+        <div className="mt-3">
+          <HScroll className="-mx-1 px-1">
+            {days.map((d, i) => {
+              const disabled = d.blocks.length === 0
+              const active = i === activeDayIndex
+              return (
+                <button
+                  key={i}
+                  onClick={() => jumpToDay(i)}
+                  disabled={disabled}
+                  className={[
+                    'shrink-0 rounded-full border px-3 py-1 text-xs transition',
+                    disabled ? 'opacity-40 cursor-not-allowed border-white/10 bg-white/5 text-white/50' : '',
+                    active
+                      ? 'border-white/20 bg-white/10 text-white'
+                      : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10',
+                  ].join(' ')}
+                >
+                  {d.dayLabel || `Day ${i + 1}`}
+                </button>
+              )
+            })}
+          </HScroll>
         </div>
 
         <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-4 overflow-hidden">
           <div className="flex items-start justify-between gap-3 min-w-0">
             <div className="min-w-0">
-              <div className="text-xs text-white/55">Session</div>
+              <div className="text-xs text-white/55">Day</div>
+              <div className="mt-1 text-sm font-semibold text-white/90 break-words">
+                {activeDay ? activeDay.dayLabel : 'No day'}
+              </div>
+
+              <div className="mt-3 text-xs text-white/55">Session</div>
               <div className="mt-1 text-lg font-semibold leading-snug text-white break-words">
                 {activeBlock ? activeBlock.label : 'No blocks'}
               </div>
-              <div className="mt-1 text-xs text-white/50">
-                Block {blocks.length ? activeBlockIndex + 1 : 0}/{blocks.length || 0}
+
+              <div className="mt-1 text-sm text-white/60">
+                {activeBlock ? (activeBlock.type === 'break' ? 'Break time' : 'Focus time') : '—'}
               </div>
             </div>
 
-            <div className="shrink-0 text-right">
-              <div className="text-xs text-white/55">Duration</div>
-              <div className="mt-1 text-sm text-white/80">{activeBlock ? `${activeBlock.minutes}m` : '—'}</div>
+            <div className="text-right shrink-0 min-w-[120px]">
+              <div className="text-xs uppercase tracking-[0.18em] text-white/55">Timer</div>
+              <div className="mt-1 text-3xl font-semibold tabular-nums text-white">
+                {secondsToMMSS(secondsLeft)}
+              </div>
             </div>
           </div>
 
+          <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/5">
+            {activeBlock ? <div className="h-full bg-white/50" style={{ width: `${progressPct}%` }} /> : null}
+          </div>
+
           <HScroll className="mt-4 -mx-1 px-1 max-w-full">
-            <Button onClick={() => setRunning((v) => !v)} disabled={!canStart} className="shrink-0 gap-2">
+            <Button
+              onClick={() => setRunning((v) => !v)}
+              disabled={!activeBlock}
+              className="shrink-0 gap-2"
+            >
               {running ? <Pause size={16} /> : <Play size={16} />}
               {running ? 'Pause' : 'Start'}
             </Button>
 
-            <Button variant="ghost" onClick={resetBlock} className="shrink-0 gap-2" disabled={!activeBlock}>
+            <Button
+              variant="ghost"
+              onClick={resetBlock}
+              className="shrink-0 gap-2"
+              disabled={!activeBlock}
+            >
               <RotateCcw size={16} />
               Reset
             </Button>
 
             <Button
               variant="ghost"
-              onClick={nextBlock}
+              onClick={skipToNext}
               className="shrink-0 gap-2"
-              disabled={!blocks.length || activeBlockIndex >= blocks.length - 1}
+              disabled={!activeBlock}
             >
               <SkipForward size={16} />
-              Next block
-            </Button>
-
-            <Button
-              variant="ghost"
-              onClick={nextDay}
-              className="shrink-0 gap-2"
-              disabled={!dayBlocks.length || activeDayIndex >= dayBlocks.length - 1}
-            >
-              <SkipForward size={16} />
-              Next day
+              Next
             </Button>
           </HScroll>
 
-          {dayBlocks.length > 1 ? (
-            <div className="mt-4">
-              <div className="text-xs uppercase tracking-[0.18em] text-white/55">Jump to day</div>
-              <HScroll className="mt-2 -mx-1 px-1 max-w-full">
-                {dayBlocks.map((_, di) => (
-                  <button
-                    key={di}
-                    onClick={() => jumpToDay(di)}
-                    className={
-                      'shrink-0 rounded-full border px-3 py-1 text-xs transition ' +
-                      (di === activeDayIndex
-                        ? 'border-white/20 bg-white/10 text-white/90'
-                        : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10')
-                    }
-                    type="button"
-                  >
-                    {dailyPlan?.[di]?.day || `Day ${di + 1}`}
-                  </button>
-                ))}
-              </HScroll>
-            </div>
-          ) : null}
+          <div className="mt-3 text-xs text-white/50">
+            Block {activeBlock ? activeBlockIndex + 1 : 0}/{activeDay?.blocks?.length ?? 0} • Day{' '}
+            {activeDayIndex + 1}/{days.length}
+          </div>
         </div>
       </div>
     </div>

@@ -93,7 +93,7 @@ async function setCurrentPlanRemote(id: string | null) {
       body: JSON.stringify({ id }),
     })
   } catch {
-    // ignore (fallback is local)
+    // ignore
   }
 }
 
@@ -220,7 +220,6 @@ function Inner() {
     setResult(null)
     setSelectedId(null)
     setTab('plan')
-
     setAskAnswer(null)
     setAskError(null)
     setAskText('')
@@ -246,9 +245,7 @@ function Inner() {
       const localId = id || `local_${Date.now()}_${Math.random().toString(16).slice(2)}`
       const created_at = new Date().toISOString()
 
-      if (id) setSelectedId(id)
-      else setSelectedId(localId)
-
+      setSelectedId(localId)
       setResult(r)
       setTab('plan')
 
@@ -462,13 +459,15 @@ function Inner() {
                 </div>
               )}
 
-              {/* DAILY ✅ Pomodoro top on normal screens, right only at 2XL */}
+              {/* DAILY: Pomodoro TOP by default, right only at 2XL */}
               {tab === 'daily' && result && (
                 <div className="grid gap-6 min-w-0 2xl:grid-cols-[minmax(0,1fr)_360px]">
+                  {/* Pomodoro */}
                   <aside className="order-1 w-full shrink-0 self-start 2xl:order-2 2xl:w-[360px] 2xl:sticky 2xl:top-6">
-                    <Pomodoro dailyPlan={result.daily_plan ?? []} />
+                    <Pomodoro dailyPlan={result.daily_plan} />
                   </aside>
 
+                  {/* Days */}
                   <div className="order-2 min-w-0 space-y-6 2xl:order-1">
                     {(result?.daily_plan ?? []).map((d, di) => (
                       <section

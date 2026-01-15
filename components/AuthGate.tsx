@@ -15,7 +15,13 @@ type Me = {
   }
 }
 
-export default function AuthGate({ children, requireEntitlement = true }: { children: React.ReactNode; requireEntitlement?: boolean }) {
+export default function AuthGate({
+  children,
+  requireEntitlement = true,
+}: {
+  children: React.ReactNode
+  requireEntitlement?: boolean
+}) {
   const router = useRouter()
   const pathname = usePathname()
   const [ready, setReady] = useState(false)
@@ -27,7 +33,6 @@ export default function AuthGate({ children, requireEntitlement = true }: { chil
     async function run() {
       setError(null)
       if (!supabase) {
-        // If Supabase isn't configured, we can't enforce auth.
         setReady(true)
         return
       }

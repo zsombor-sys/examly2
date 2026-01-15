@@ -49,6 +49,33 @@ function byUserOrId(q: any, userId: string) {
   return q.or(`user_id.eq.${userId},id.eq.${userId}`)
 }
 
+async function normalizeProfileNullsBestEffort(userId: string, p: any) {
+  // ✅ CRITICAL FIX: sok régi rekordnál free_used/credits NULL -> optimistic update sosem talál egyezést
+  const creditsIsNull = p?.credits == null
+  const freeUsedIsNull = p?.free_used == null
+
+  if (!creditsIsNull && !freeUsedIsNull) return p
+
+  try {
+    const sb = supabaseAdmin()
+    const patch: any = { updated_at: nowIso() }
+    if (creditsIsNull) patch.credits = 0
+    if (freeUsedIsNull) patch.free_used = 0
+
+    const { data, error } = await byUserOrId(sb.from('profiles').update(patch), userId).select('*').maybeSingle()
+    if (!error && data) return data
+  } catch {
+    // ignore
+  }
+
+  // fallback local patch
+  return {
+    ...p,
+    credits: creditsIsNull ? 0 : p.credits,
+    free_used: freeUsedIsNull ? 0 : p.free_used,
+  }
+}
+
 /**
  * FIX: profiles.id NOT NULL -> insertnél kötelező.
  * Biztonság: ha valahol nem user_id alapján van a rekord, fallbackolunk id-ra is.
@@ -63,7 +90,11 @@ export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
     .maybeSingle()
 
   if (selErr1) throw selErr1
-  if (byUserId) return byUserId as ProfileRow
+  if (byUserId) {
+    // ✅ FIX: itt is normalizálunk (eddig csak id-ágban volt)
+    const normalized = await normalizeProfileNullsBestEffort(userId, byUserId)
+    return normalized as ProfileRow
+  }
 
   const { data: byId, error: selErr2 } = await sb
     .from('profiles')
@@ -216,7 +247,6 @@ export async function consumeGeneration(userId: string) {
     }
 
     if (ent.credits > 0) {
-      // ✅ update find profile by user_id OR id
       const q = sb
         .from('profiles')
         .update({ credits: ent.credits - 1, updated_at: nowIso() })
@@ -243,8 +273,6 @@ export async function consumeGeneration(userId: string) {
 
 /**
  * FREE: 48 óra, egyszer.
- * FIX: ha már volt free_window_start valaha -> tiltás.
- * FIX: credits ne maradjon NULL (0-ra beírjuk).
  */
 export async function activateFree(userId: string, fullName: string, phone: string) {
   const sb = supabaseAdmin()
@@ -267,7 +295,6 @@ export async function activateFree(userId: string, fullName: string, phone: stri
       free_window_start: nowIso(),
       free_expires_at: addHoursISO(FREE_WINDOW_HOURS),
       free_used: 0,
-      // ✅ ez a kulcs: ha eddig null volt, legyen 0
       credits: Number(p.credits ?? 0),
       updated_at: nowIso(),
     })

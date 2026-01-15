@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Play, Pause, RotateCcw, SkipForward, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui'
 import HScroll from '@/components/HScroll'
@@ -59,7 +60,6 @@ export default function Pomodoro({
   dailyPlan: DayPlan[]
   className?: string
 }) {
-  // ----- normalize days (blocks)
   const days = useMemo(() => {
     const src = Array.isArray(dailyPlan) ? dailyPlan : []
     return src.map((d, i) => {
@@ -74,22 +74,33 @@ export default function Pomodoro({
 
   const hasAnyBlocks = useMemo(() => days.some((d) => d.blocks.length > 0), [days])
 
-  // ----- timer state
+  // timer state
   const [activeDayIndex, setActiveDayIndex] = useState(0)
   const [activeBlockIndex, setActiveBlockIndex] = useState(0)
   const [running, setRunning] = useState(false)
   const [secondsLeft, setSecondsLeft] = useState(25 * 60)
-
   const tickRef = useRef<number | null>(null)
 
   const activeDay = days[activeDayIndex] ?? null
   const activeBlock = activeDay?.blocks?.[activeBlockIndex] ?? null
 
-  // ----- confetti canvas
+  // --- PORTAL overlay
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+
+  // --- confetti engine (canvas in portal)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const particlesRef = useRef<Particle[]>([])
-  const animRef = useRef<number | null>(null)
+  const rafRef = useRef<number | null>(null)
   const lastTRef = useRef<number>(0)
+
+  const emitUntilRef = useRef<number>(0) // timestamp in ms until we keep spawning "shower" particles
+  const gravityRef = useRef<number>(1100)
+
+  const colors = useMemo(
+    () => ['#ffffff', '#a3ffea', '#ffd9a3', '#ffb3d9', '#b3c7ff', '#d7ff8a', '#ff8ad7', '#8affff', '#ffe98a'],
+    []
+  )
 
   const resizeCanvas = () => {
     const c = canvasRef.current
@@ -104,147 +115,181 @@ export default function Pomodoro({
   }
 
   useEffect(() => {
+    if (!mounted) return
     resizeCanvas()
     window.addEventListener('resize', resizeCanvas)
     return () => window.removeEventListener('resize', resizeCanvas)
-  }, [])
+  }, [mounted])
 
-  const fireConfetti = (mode: 'block' | 'day' | 'end' = 'block') => {
-    // full-screen, visible, lots of particles
-    const c = canvasRef.current
-    if (!c) return
+  const ensureRaf = () => {
+    if (rafRef.current != null) return
+    lastTRef.current = performance.now()
+    rafRef.current = window.requestAnimationFrame(step)
+  }
 
-    const base = mode === 'block' ? 140 : mode === 'day' ? 220 : 360
-    const gravity = mode === 'block' ? 900 : mode === 'day' ? 1050 : 1250
-    const spread = mode === 'block' ? 520 : mode === 'day' ? 720 : 920
-
-    const colors = [
-      '#ffffff',
-      '#a3ffea',
-      '#ffd9a3',
-      '#ffb3d9',
-      '#b3c7ff',
-      '#d7ff8a',
-      '#ff8ad7',
-      '#8affff',
-      '#ffe98a',
-    ]
-
+  // Burst: a bit like “shot + bloom”
+  const spawnBurst = (mode: 'block' | 'day' | 'end') => {
     const cx = window.innerWidth * 0.5
     const cy = window.innerHeight * 0.35
 
-    for (let i = 0; i < base; i++) {
-      const angle = rand(-Math.PI, 0) // shoot upward
+    const count = mode === 'block' ? 120 : mode === 'day' ? 180 : 260
+    const spread = mode === 'block' ? 900 : mode === 'day' ? 1200 : 1500
+
+    for (let i = 0; i < count; i++) {
+      const angle = rand(-Math.PI * 0.95, -Math.PI * 0.05) // mostly upward
       const speed = rand(spread * 0.35, spread)
-      const vx = Math.cos(angle) * speed * rand(0.6, 1.05)
-      const vy = Math.sin(angle) * speed * rand(0.75, 1.1)
+      const vx = Math.cos(angle) * speed * rand(0.65, 1.05)
+      const vy = Math.sin(angle) * speed * rand(0.65, 1.05)
 
       particlesRef.current.push({
-        x: cx + rand(-30, 30),
-        y: cy + rand(-25, 25),
+        x: cx + rand(-40, 40),
+        y: cy + rand(-30, 30),
         vx,
         vy,
-        size: rand(3, mode === 'end' ? 8 : 6),
+        size: rand(4, mode === 'end' ? 9 : 7),
         rot: rand(0, Math.PI * 2),
-        vr: rand(-8, 8),
+        vr: rand(-10, 10),
         life: 0,
-        maxLife: rand(mode === 'block' ? 900 : 1200, mode === 'end' ? 1900 : 1500),
+        maxLife: rand(mode === 'block' ? 1400 : 1800, mode === 'end' ? 2600 : 2100),
+        shape: Math.random() < 0.22 ? 'circle' : 'rect',
+        color: pick(colors),
+        alpha: 1,
+      })
+    }
+  }
+
+  // Shower: slow falling confetti from top for a while
+  const startShower = (ms: number, intensity: number) => {
+    emitUntilRef.current = Math.max(emitUntilRef.current, performance.now() + ms)
+    gravityRef.current = 1050
+    // intensity controls how many per frame block
+    showerIntensityRef.current = intensity
+  }
+
+  const showerIntensityRef = useRef<number>(10)
+
+  const fireConfetti = (mode: 'block' | 'day' | 'end' = 'block') => {
+    // This is what user expects: burst + shower
+    spawnBurst(mode)
+
+    if (mode === 'block') startShower(1400, 10)
+    if (mode === 'day') startShower(1900, 14)
+    if (mode === 'end') startShower(2600, 18)
+
+    ensureRaf()
+  }
+
+  const spawnShowerFrame = (dt: number) => {
+    const now = performance.now()
+    if (now > emitUntilRef.current) return
+
+    // spawn a few each frame
+    const n = showerIntensityRef.current
+    for (let i = 0; i < n; i++) {
+      particlesRef.current.push({
+        x: rand(0, window.innerWidth),
+        y: rand(-30, -5),
+        vx: rand(-80, 80),
+        vy: rand(60, 220),
+        size: rand(4, 8),
+        rot: rand(0, Math.PI * 2),
+        vr: rand(-6, 6),
+        life: 0,
+        maxLife: rand(2200, 3300),
         shape: Math.random() < 0.25 ? 'circle' : 'rect',
         color: pick(colors),
         alpha: 1,
       })
     }
+  }
 
-    if (animRef.current == null) {
-      lastTRef.current = performance.now()
-      animRef.current = window.requestAnimationFrame(stepAnim(gravity))
+  const step = (t: number) => {
+    const c = canvasRef.current
+    if (!c) {
+      rafRef.current = null
+      return
+    }
+    const ctx = c.getContext('2d')
+    if (!ctx) {
+      rafRef.current = null
+      return
+    }
+
+    const dt = Math.min(0.033, (t - lastTRef.current) / 1000)
+    lastTRef.current = t
+
+    // spawn shower particles while active
+    spawnShowerFrame(dt)
+
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight)
+
+    const g = gravityRef.current
+    const next: Particle[] = []
+
+    for (const p of particlesRef.current) {
+      p.life += dt * 1000
+      if (p.life >= p.maxLife) continue
+
+      // gravity + a touch of air drag
+      p.vy += g * dt
+      p.vx *= 0.993
+      p.vy *= 0.993
+
+      p.x += p.vx * dt
+      p.y += p.vy * dt
+      p.rot += p.vr * dt
+
+      // fade near end
+      const k = 1 - p.life / p.maxLife
+      p.alpha = clamp(k * 1.15, 0, 1)
+
+      // bounce lightly at bottom (feels more “alive”)
+      const bottom = window.innerHeight + 40
+      if (p.y > bottom) continue
+
+      ctx.save()
+      ctx.globalAlpha = p.alpha
+      ctx.translate(p.x, p.y)
+      ctx.rotate(p.rot)
+      ctx.fillStyle = p.color
+
+      if (p.shape === 'circle') {
+        ctx.beginPath()
+        ctx.arc(0, 0, p.size * 0.55, 0, Math.PI * 2)
+        ctx.fill()
+      } else {
+        ctx.fillRect(-p.size, -p.size * 0.5, p.size * 2, p.size)
+      }
+
+      ctx.restore()
+
+      next.push(p)
+    }
+
+    particlesRef.current = next
+
+    // keep going while particles exist or shower still emitting
+    if (particlesRef.current.length > 0 || performance.now() < emitUntilRef.current) {
+      rafRef.current = window.requestAnimationFrame(step)
+    } else {
+      rafRef.current = null
     }
   }
 
-  const stepAnim =
-    (gravity: number) =>
-    (t: number) => {
-      const c = canvasRef.current
-      if (!c) {
-        animRef.current = null
-        return
-      }
-      const ctx = c.getContext('2d')
-      if (!ctx) {
-        animRef.current = null
-        return
-      }
-
-      const dt = Math.min(0.033, (t - lastTRef.current) / 1000)
-      lastTRef.current = t
-
-      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight)
-
-      const next: Particle[] = []
-      for (const p of particlesRef.current) {
-        p.life += dt * 1000
-        if (p.life >= p.maxLife) continue
-
-        // physics
-        p.vy += gravity * dt
-        p.vx *= 0.995
-        p.vy *= 0.995
-
-        p.x += p.vx * dt
-        p.y += p.vy * dt
-        p.rot += p.vr * dt
-
-        // fade out near end
-        const k = 1 - p.life / p.maxLife
-        p.alpha = clamp(k * 1.2, 0, 1)
-
-        // draw
-        ctx.save()
-        ctx.globalAlpha = p.alpha
-        ctx.translate(p.x, p.y)
-        ctx.rotate(p.rot)
-        ctx.fillStyle = p.color
-
-        if (p.shape === 'circle') {
-          ctx.beginPath()
-          ctx.arc(0, 0, p.size * 0.6, 0, Math.PI * 2)
-          ctx.fill()
-        } else {
-          ctx.fillRect(-p.size, -p.size * 0.5, p.size * 2, p.size)
-        }
-
-        ctx.restore()
-
-        next.push(p)
-      }
-
-      particlesRef.current = next
-
-      if (particlesRef.current.length > 0) {
-        animRef.current = window.requestAnimationFrame(stepAnim(gravity))
-      } else {
-        animRef.current = null
-      }
-    }
-
-  // ----- initialize: start at Day 1, first available block
+  // init: start at first day with blocks
   useEffect(() => {
     if (!hasAnyBlocks) return
-
-    // pick first day that has blocks
     const firstDay = days.findIndex((d) => d.blocks.length > 0)
     const di = firstDay >= 0 ? firstDay : 0
-
     setActiveDayIndex(di)
     setActiveBlockIndex(0)
-
     const b = days[di]?.blocks?.[0]
     setSecondsLeft((b?.minutes ?? 25) * 60)
     setRunning(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAnyBlocks])
 
-  // ----- ticking
+  // ticking
   useEffect(() => {
     if (!running) return
     if (!activeBlock) return
@@ -259,48 +304,42 @@ export default function Pomodoro({
     }
   }, [running, activeBlock])
 
-  // ----- when block ends: confetti + auto advance (block -> block, day -> day)
+  // block end -> confetti -> advance
   useEffect(() => {
     if (!running) return
     if (!activeBlock) return
     if (secondsLeft !== 0) return
 
-    // ALWAYS confetti on every block end (study + break)
+    // confetti on EVERY block end (study + break)
     fireConfetti('block')
 
     const currDay = days[activeDayIndex]
     const currBlocks = currDay?.blocks ?? []
-
     const nextBlockIndex = activeBlockIndex + 1
 
-    // if next block exists in same day: go there and keep running
     if (nextBlockIndex < currBlocks.length) {
       const nb = currBlocks[nextBlockIndex]
       setActiveBlockIndex(nextBlockIndex)
       setSecondsLeft((nb?.minutes ?? 25) * 60)
-      // keep running true
       return
     }
 
-    // day finished: jump to next day that has blocks
+    // day finished
     fireConfetti('day')
 
     let di = activeDayIndex + 1
     while (di < days.length && (days[di]?.blocks?.length ?? 0) === 0) di++
 
-    // if no more days: finale and stop
     if (di >= days.length) {
       fireConfetti('end')
       setRunning(false)
       return
     }
 
-    // jump day
     setActiveDayIndex(di)
     setActiveBlockIndex(0)
     const first = days[di]?.blocks?.[0]
     setSecondsLeft((first?.minutes ?? 25) * 60)
-    // keep running true
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondsLeft, running])
 
@@ -336,7 +375,6 @@ export default function Pomodoro({
       setSecondsLeft((currBlocks[nextBlockIndex]?.minutes ?? 25) * 60)
       return
     }
-    // go next day
     let di = activeDayIndex + 1
     while (di < days.length && (days[di]?.blocks?.length ?? 0) === 0) di++
     if (di >= days.length) return
@@ -348,12 +386,18 @@ export default function Pomodoro({
 
   return (
     <div className={className}>
-      {/* full-screen confetti canvas */}
-      <canvas
-        ref={canvasRef}
-        className="pointer-events-none fixed inset-0 z-[9999]"
-        aria-hidden="true"
-      />
+      {/* CANVAS IN PORTAL -> cannot be clipped by transforms/overflow */}
+      {mounted
+        ? createPortal(
+            <canvas
+              ref={canvasRef}
+              aria-hidden="true"
+              className="pointer-events-none fixed inset-0 z-[999999]"
+              style={{ width: '100vw', height: '100vh' }}
+            />,
+            document.body
+          )
+        : null}
 
       <div className="rounded-3xl border border-white/10 bg-white/[0.02] p-5 overflow-hidden">
         <div className="flex items-center justify-between gap-3">
@@ -369,7 +413,6 @@ export default function Pomodoro({
           </button>
         </div>
 
-        {/* Day jump pills */}
         <div className="mt-3">
           <HScroll className="-mx-1 px-1">
             {days.map((d, i) => {
@@ -435,22 +478,12 @@ export default function Pomodoro({
               {running ? 'Pause' : 'Start'}
             </Button>
 
-            <Button
-              variant="ghost"
-              onClick={resetBlock}
-              className="shrink-0 gap-2"
-              disabled={!activeBlock}
-            >
+            <Button variant="ghost" onClick={resetBlock} className="shrink-0 gap-2" disabled={!activeBlock}>
               <RotateCcw size={16} />
               Reset
             </Button>
 
-            <Button
-              variant="ghost"
-              onClick={skipToNext}
-              className="shrink-0 gap-2"
-              disabled={!activeBlock}
-            >
+            <Button variant="ghost" onClick={skipToNext} className="shrink-0 gap-2" disabled={!activeBlock}>
               <SkipForward size={16} />
               Next
             </Button>

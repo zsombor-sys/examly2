@@ -241,8 +241,9 @@ function Inner() {
       const r = (json?.result ?? null) as PlanResult | null
       if (!r) throw new Error('Server returned no result')
 
-      const id = typeof json?.id === 'string' ? (json.id as string) : null
-      const localId = id || `local_${Date.now()}_${Math.random().toString(16).slice(2)}`
+      // ✅ If server returns id, use it as current/selected.
+      const serverId = typeof json?.id === 'string' ? (json.id as string) : null
+      const localId = serverId || `local_${Date.now()}_${Math.random().toString(16).slice(2)}`
       const created_at = new Date().toISOString()
 
       setSelectedId(localId)
@@ -253,9 +254,12 @@ function Inner() {
       setAskError(null)
       setAskText('')
 
+      // ✅ always keep local history too (serverless-proof)
       saveLocalPlan({ id: localId, title: r.title || 'Untitled plan', created_at, result: r })
 
+      // ✅ set current plan to the same id we use in history
       await setCurrentPlan(localId)
+
       await loadHistory()
     } catch (e: any) {
       setError(e?.message ?? 'Error')
@@ -459,15 +463,13 @@ function Inner() {
                 </div>
               )}
 
-              {/* DAILY: Pomodoro TOP by default, right only at 2XL */}
+              {/* DAILY */}
               {tab === 'daily' && result && (
                 <div className="grid gap-6 min-w-0 2xl:grid-cols-[minmax(0,1fr)_360px]">
-                  {/* Pomodoro */}
                   <aside className="order-1 w-full shrink-0 self-start 2xl:order-2 2xl:w-[360px] 2xl:sticky 2xl:top-6">
                     <Pomodoro dailyPlan={result.daily_plan} />
                   </aside>
 
-                  {/* Days */}
                   <div className="order-2 min-w-0 space-y-6 2xl:order-1">
                     {(result?.daily_plan ?? []).map((d, di) => (
                       <section

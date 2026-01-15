@@ -44,38 +44,6 @@ function stripeClient() {
   return new Stripe(key, { apiVersion: '2024-06-20' })
 }
 
-function byUserOrId(q: any, userId: string) {
-  // Supabase OR filter: works for select/update/delete
-  return q.or(`user_id.eq.${userId},id.eq.${userId}`)
-}
-
-async function normalizeProfileNullsBestEffort(userId: string, p: any) {
-  // ✅ CRITICAL FIX: sok régi rekordnál free_used/credits NULL -> optimistic update sosem talál egyezést
-  const creditsIsNull = p?.credits == null
-  const freeUsedIsNull = p?.free_used == null
-
-  if (!creditsIsNull && !freeUsedIsNull) return p
-
-  try {
-    const sb = supabaseAdmin()
-    const patch: any = { updated_at: nowIso() }
-    if (creditsIsNull) patch.credits = 0
-    if (freeUsedIsNull) patch.free_used = 0
-
-    const { data, error } = await byUserOrId(sb.from('profiles').update(patch), userId).select('*').maybeSingle()
-    if (!error && data) return data
-  } catch {
-    // ignore
-  }
-
-  // fallback local patch
-  return {
-    ...p,
-    credits: creditsIsNull ? 0 : p.credits,
-    free_used: freeUsedIsNull ? 0 : p.free_used,
-  }
-}
-
 /**
  * FIX: profiles.id NOT NULL -> insertnél kötelező.
  * Biztonság: ha valahol nem user_id alapján van a rekord, fallbackolunk id-ra is.
@@ -91,23 +59,30 @@ export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
 
   if (selErr1) throw selErr1
   if (byUserId) {
-    // ✅ FIX: itt is normalizálunk (eddig csak id-ágban volt)
-    const normalized = await normalizeProfileNullsBestEffort(userId, byUserId)
-    return normalized as ProfileRow
+    // best-effort: ha NULL mezők vannak, javítsuk ki
+    if ((byUserId as any).credits == null || (byUserId as any).free_used == null) {
+      const patch: any = { updated_at: nowIso() }
+      if ((byUserId as any).credits == null) patch.credits = 0
+      if ((byUserId as any).free_used == null) patch.free_used = 0
+
+      const { data: fixed } = await sb
+        .from('profiles')
+        .update(patch)
+        .eq('user_id', userId)
+        .select('*')
+        .maybeSingle()
+
+      return (fixed ?? { ...byUserId, ...patch }) as ProfileRow
+    }
+    return byUserId as ProfileRow
   }
 
-  const { data: byId, error: selErr2 } = await sb
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle()
-
+  const { data: byId, error: selErr2 } = await sb.from('profiles').select('*').eq('id', userId).maybeSingle()
   if (selErr2) throw selErr2
   if (byId) {
     if (!(byId as any).user_id) {
       await sb.from('profiles').update({ user_id: userId, updated_at: nowIso() }).eq('id', userId)
     }
-    // ha credits null volt, tegyük rendbe
     if ((byId as any).credits == null) {
       await sb.from('profiles').update({ credits: 0, updated_at: nowIso() }).eq('id', userId)
       ;(byId as any).credits = 0
@@ -194,20 +169,68 @@ export async function maybeAutoRecharge(userId: string) {
       { idempotencyKey }
     )
 
-    if (pi.status !== 'succeeded') {
-      return { attempted: true, succeeded: false, status: pi.status }
-    }
+    if (pi.status !== 'succeeded') return { attempted: true, succeeded: false, status: pi.status }
 
     const shouldCredit = await markStripeEventOnce(pi.id, 'auto_recharge_payment_intent')
     if (shouldCredit) {
       const next = Number(p.credits ?? 0) + PRO_CREDITS_PER_PURCHASE
-      await byUserOrId(sb.from('profiles').update({ credits: next, updated_at: nowIso() }), userId)
+      // update user_id, ha nincs, akkor id
+      await sb.from('profiles').update({ credits: next, updated_at: nowIso() }).eq('user_id', userId)
+      await sb.from('profiles').update({ credits: next, updated_at: nowIso() }).eq('id', userId)
     }
 
     return { attempted: true, succeeded: true }
   } catch (e: any) {
     return { attempted: true, succeeded: false, error: e?.code ?? e?.message }
   }
+}
+
+/**
+ * ✅ HARD FIX: free/pro fogyasztásnál nem elég a sima eq(...) compare,
+ * mert NULL/free_used mismatch miatt 0 sor frissül és jön a "Please try again".
+ *
+ * Itt user_id alapján próbálunk update-elni úgy, hogy:
+ * (col IS NULL OR col = expected)
+ * ha 0 sor, akkor ugyanez id alapján.
+ */
+async function optimisticUpdateWithNullOk(params: {
+  userId: string
+  mode: 'credits' | 'free_used'
+  expected: number
+  nextValue: number
+}) {
+  const { userId, mode, expected, nextValue } = params
+  const sb = supabaseAdmin()
+
+  const col = mode
+
+  // 1) user_id ág
+  {
+    const { data, error } = await sb
+      .from('profiles')
+      .update({ [col]: nextValue, updated_at: nowIso() } as any)
+      .eq('user_id', userId)
+      .or(`${col}.is.null,${col}.eq.${expected}`)
+      .select('*')
+      .maybeSingle()
+
+    if (!error && data) return data
+  }
+
+  // 2) id ág
+  {
+    const { data, error } = await sb
+      .from('profiles')
+      .update({ [col]: nextValue, updated_at: nowIso() } as any)
+      .eq('id', userId)
+      .or(`${col}.is.null,${col}.eq.${expected}`)
+      .select('*')
+      .maybeSingle()
+
+    if (!error && data) return data
+  }
+
+  return null
 }
 
 /**
@@ -247,27 +270,28 @@ export async function consumeGeneration(userId: string) {
     }
 
     if (ent.credits > 0) {
-      const q = sb
-        .from('profiles')
-        .update({ credits: ent.credits - 1, updated_at: nowIso() })
-        .eq('credits', ent.credits)
-
-      const { data, error } = await byUserOrId(q, userId).select('*').maybeSingle()
-      if (!error && data) return { mode: 'pro', profile: data }
+      const updated = await optimisticUpdateWithNullOk({
+        userId,
+        mode: 'credits',
+        expected: ent.credits,
+        nextValue: ent.credits - 1,
+      })
+      if (updated) return { mode: 'pro', profile: updated }
     } else if (ent.freeRemaining > 0) {
       const cur = Number(p.free_used ?? 0)
-      const q = sb
-        .from('profiles')
-        .update({ free_used: cur + 1, updated_at: nowIso() })
-        .eq('free_used', cur)
-
-      const { data, error } = await byUserOrId(q, userId).select('*').maybeSingle()
-      if (!error && data) return { mode: 'free', profile: data }
+      const updated = await optimisticUpdateWithNullOk({
+        userId,
+        mode: 'free_used',
+        expected: cur,
+        nextValue: cur + 1,
+      })
+      if (updated) return { mode: 'free', profile: updated }
     }
   }
 
   const err: any = new Error('Please try again')
   err.status = 409
+  err.code = 'CONFLICT_RETRY'
   throw err
 }
 
@@ -287,21 +311,32 @@ export async function activateFree(userId: string, fullName: string, phone: stri
     throw err
   }
 
-  const q = sb
-    .from('profiles')
-    .update({
-      full_name: fullName,
-      phone,
-      free_window_start: nowIso(),
-      free_expires_at: addHoursISO(FREE_WINDOW_HOURS),
-      free_used: 0,
-      credits: Number(p.credits ?? 0),
-      updated_at: nowIso(),
-    })
+  // update user_id, ha nincs, akkor id
+  const patch = {
+    full_name: fullName,
+    phone,
+    free_window_start: nowIso(),
+    free_expires_at: addHoursISO(FREE_WINDOW_HOURS),
+    free_used: 0,
+    credits: Number(p.credits ?? 0),
+    updated_at: nowIso(),
+  }
 
-  const { data, error } = await byUserOrId(q, userId).select('*').single()
-  if (error) throw error
-  return data as ProfileRow
+  let out: any = null
+
+  {
+    const { data } = await sb.from('profiles').update(patch).eq('user_id', userId).select('*').maybeSingle()
+    if (data) out = data
+  }
+
+  if (!out) {
+    const { data } = await sb.from('profiles').update(patch).eq('id', userId).select('*').maybeSingle()
+    if (data) out = data
+  }
+
+  if (!out) throw new Error('Failed to activate free (profile not found)')
+
+  return out as ProfileRow
 }
 
 export async function addProCredits(userId: string, amount = PRO_CREDITS_PER_PURCHASE) {
@@ -309,9 +344,18 @@ export async function addProCredits(userId: string, amount = PRO_CREDITS_PER_PUR
   const p = await getOrCreateProfile(userId)
   const next = Number(p.credits ?? 0) + amount
 
-  const q = sb.from('profiles').update({ credits: next, updated_at: nowIso() })
-  const { data, error } = await byUserOrId(q, userId).select('*').single()
+  let out: any = null
 
-  if (error) throw error
-  return data as ProfileRow
+  {
+    const { data } = await sb.from('profiles').update({ credits: next, updated_at: nowIso() }).eq('user_id', userId).select('*').maybeSingle()
+    if (data) out = data
+  }
+
+  if (!out) {
+    const { data } = await sb.from('profiles').update({ credits: next, updated_at: nowIso() }).eq('id', userId).select('*').maybeSingle()
+    if (data) out = data
+  }
+
+  if (!out) throw new Error('Failed to add credits (profile not found)')
+  return out as ProfileRow
 }

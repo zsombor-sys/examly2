@@ -6,19 +6,34 @@ import OpenAI from 'openai'
 export const runtime = 'nodejs'
 
 function safeParseJson(text: string) {
+  const raw = String(text ?? '')
+  if (!raw.trim()) throw new Error('Model returned empty response (no JSON).')
+
+  // try direct
   try {
-    return JSON.parse(text)
-  } catch {
-    const m = text.match(/\{[\s\S]*\}/)
-    if (m) return JSON.parse(m[0])
-    throw new Error('Model did not return JSON')
+    return JSON.parse(raw)
+  } catch {}
+
+  // try extract first {...}
+  const m = raw.match(/\{[\s\S]*\}/)
+  if (m) {
+    try {
+      return JSON.parse(m[0])
+    } catch {}
   }
+
+  // repair backslashes (common failure)
+  const repaired = raw.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
+  const m2 = repaired.match(/\{[\s\S]*\}/)
+  if (m2) return JSON.parse(m2[0])
+
+  throw new Error('Model did not return valid JSON.')
 }
 
 function normalize(payload: any) {
   const out: any = { ...(payload ?? {}) }
   out.title = String(out.title ?? 'Vocab set')
-  out.language = String(out.language ?? 'English ⇄ Hungarian')
+  out.language = String(out.language ?? 'English → Hungarian')
   out.items = Array.isArray(out.items) ? out.items : []
   out.items = out.items
     .map((x: any) => ({
@@ -31,108 +46,117 @@ function normalize(payload: any) {
   return out
 }
 
+function langLabel(code: string) {
+  const map: Record<string, string> = {
+    en: 'English',
+    hu: 'Hungarian',
+    de: 'German',
+    es: 'Spanish',
+    it: 'Italian',
+    la: 'Latin',
+  }
+  return map[code] ?? code
+}
+
 export async function POST(req: Request) {
   try {
-
     const user = await requireUser(req)
+
+    // ✅ credits/free consumption first (so abuse can’t bypass)
     await consumeGeneration(user.id)
 
     const form = await req.formData()
     const words = String(form.get('words') ?? '').trim()
-    const files = form.getAll('files') as File[]
+    const files = (form.getAll('files') as File[]).filter(Boolean)
     const sourceLang = String(form.get('sourceLang') ?? 'en')
     const targetLang = String(form.get('targetLang') ?? 'hu')
 
     const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) {
       // mock
-      const lines = words.split(/\n/).filter(Boolean).slice(0, 10)
+      const lines = words.split(/\n/).filter(Boolean).slice(0, 20)
       return NextResponse.json({
         title: 'Vocab set (mock)',
         language: `${sourceLang} → ${targetLang}`,
-        items: lines.map((l, i) => ({ term: l.split('-')[0]?.trim() || `word${i+1}`, translation: 'fordítás', example: 'Example sentence.' })),
+        items: lines.map((l, i) => ({
+          term: l.split('-')[0]?.trim() || `word${i + 1}`,
+          translation: 'fordítás',
+          example: 'Example sentence.',
+        })),
       })
     }
 
     const openai = new OpenAI({ apiKey })
-    const model = process.env.OPENAI_MODEL ?? 'gpt-5.1'
+    // ✅ same safe default as your Plan route
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
-    const langName: Record<string, string> = {
-      en: 'English',
-      hu: 'Hungarian',
-      de: 'German',
-      es: 'Spanish',
-      it: 'Italian',
-      la: 'Latin',
-    }
+    const src = langLabel(sourceLang)
+    const tgt = langLabel(targetLang)
 
-    const system = `You are Examly Vocab.
-Create a clean vocabulary set for studying.
+    const system = `
+You are Examly Vocab.
 
-Return ONLY valid JSON with this exact shape:
+Return ONLY a JSON object with this exact shape:
 {
   "title": string,
-  "language": string,   // e.g. "English → Hungarian"
+  "language": string,
   "items": [{"term": string, "translation": string, "example"?: string}]
 }
 
 Rules:
-- The user selects a direction using sourceLang and targetLang.
 - Translate FROM sourceLang TO targetLang.
 - Supported languages: English, Hungarian, German, Spanish, Italian, Latin.
 - If the user provides "term - translation" pairs, preserve them when they match the chosen direction.
-- If images are provided, FIRST extract the words/pairs you see in the images (keep the order, fix obvious typos), then build the set.
-- Do not invent words that are not present unless the image is unreadable (in that case, add a note to examples like "(unclear in photo)").
-- Keep it student-friendly. Use everyday vocabulary if input is unclear.
-- Provide a short example sentence for ~30-60% of items (optional).`
+- If images are provided, extract words/pairs you see first (keep order, fix obvious typos).
+- Do not invent words not present unless image is unreadable (then note "(unclear in photo)" in example).
+- Provide a short example sentence for ~30-60% of items (optional).
+`.trim()
 
-    const content: any[] = [{ type: 'input_text', text: system }]
+    const userText =
+      (words
+        ? `Direction: ${src} → ${tgt}\n\nInput words/pairs (may contain separators like "-" or ":"):\n${words}\n\nCreate flashcards translated ${src} → ${tgt}. If a line already includes a correct translation in this direction, keep it.`
+        : `Direction: ${src} → ${tgt}\n\nNo typed words provided. Extract a vocabulary list from the image(s) and create flashcards translated ${src} → ${tgt}.`) +
+      `\n\nsourceLang=${sourceLang}, targetLang=${targetLang}`
 
-    const userParts: any[] = []
-    const src = langName[sourceLang] ?? sourceLang
-    const tgt = langName[targetLang] ?? targetLang
+    const userContent: any[] = [{ type: 'text', text: userText }]
 
-    if (words) {
-      userParts.push({
-        type: 'input_text',
-        text:
-          `Direction: ${src} → ${tgt}\n\n` +
-          `Input words/pairs (may contain separators like "-" or ":"):\n${words}\n\n` +
-          `Create flashcards translated ${src} → ${tgt}. If a line already includes a correct translation in this direction, keep it.`,
-      })
-    } else {
-      userParts.push({
-        type: 'input_text',
-        text:
-          `Direction: ${src} → ${tgt}\n\n` +
-          `No typed words provided. Extract a vocabulary list from the image(s) and create flashcards translated ${src} → ${tgt}.`,
-      })
-    }
-
+    // ✅ chat.completions image format (same style as your Plan route)
     for (const f of files.slice(0, 6)) {
       const ab = await f.arrayBuffer()
       const b64 = Buffer.from(ab).toString('base64')
       const mime = f.type || 'image/png'
-      userParts.push({ type: 'input_image', image_url: `data:${mime};base64,${b64}` })
+      userContent.push({
+        type: 'image_url',
+        image_url: { url: `data:${mime};base64,${b64}` },
+      })
     }
 
-    const resp = await openai.responses.create({
+    const resp = await openai.chat.completions.create({
       model,
-      input: [
-        { role: 'system', content },
-        { role: 'user', content: userParts },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: userContent as any },
       ],
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
     })
 
-    const txt = resp.output_text
+    const txt = resp.choices?.[0]?.message?.content ?? ''
     const parsed = safeParseJson(txt)
     const normalized = normalize(parsed)
 
-    // Free hard-cap safeguard: if user sent >70 lines we still keep reasonable size
+    // safety cap
     normalized.items = normalized.items.slice(0, 300)
+
+    // if model forgot to set language nicely
+    if (!normalized.language || typeof normalized.language !== 'string') {
+      normalized.language = `${src} → ${tgt}`
+    }
 
     return NextResponse.json(normalized)
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: (e?.status ?? 400) })
+    // ✅ preserve real status codes (402 matters on client)
+    const status = Number(e?.status ?? e?.response?.status ?? 400)
+    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status })
   }
 }

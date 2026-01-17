@@ -16,6 +16,8 @@ type MeResponse = {
     credits: number
     freeActive: boolean
     freeRemaining: number
+    freeExpiresAt?: string | null
+    freeUsed?: number
   }
 }
 
@@ -39,13 +41,6 @@ function Inner() {
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
-  useEffect(() => {
-    supabase?.auth.getSession().then(({ data }) => {
-      const e = data.session?.user?.email ?? ''
-      setEmail(e)
-    })
-  }, [])
-
   async function refreshMe(): Promise<MeResponse | null> {
     try {
       const res = await authedFetch('/api/me', { method: 'GET' })
@@ -56,11 +51,36 @@ function Inner() {
     }
   }
 
-  async function waitForEntitlement(maxTries = 6): Promise<boolean> {
-    // small backoff: 0ms, 250ms, 500ms, 750ms, 1000ms...
+  // ✅ Ha már van entitlement (free aktív / van credit), ne itt ragadjunk -> /plan
+  useEffect(() => {
+    let alive = true
+
+    ;(async () => {
+      // email prefill
+      try {
+        const sess = await supabase?.auth.getSession()
+        const e = sess?.data?.session?.user?.email ?? ''
+        if (alive) setEmail(e)
+      } catch {}
+
+      // entitlement check + redirect
+      const me = await refreshMe()
+      if (!alive) return
+      if (me?.entitlement?.ok) {
+        router.replace('/plan')
+        return
+      }
+    })()
+
+    return () => {
+      alive = false
+    }
+  }, [router])
+
+  async function waitForEntitlement(maxTries = 8): Promise<boolean> {
     for (let i = 0; i < maxTries; i++) {
       const me = await refreshMe()
-      const ent = (me as any)?.entitlement
+      const ent = me?.entitlement
       if (ent?.ok) return true
       await sleep(250 + i * 250)
     }
@@ -76,10 +96,28 @@ function Inner() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, fullName, phone }),
       })
-      const json = await res.json().catch(() => ({} as any))
-      if (!res.ok) throw new Error(json?.error ?? 'Error')
 
-      // ✅ IMPORTANT: wait until the server actually sees the new entitlement
+      const json = await res.json().catch(() => ({} as any))
+
+      // ✅ Ha már egyszer használtad: ne álljunk meg itt.
+      // Frissítünk /api/me-t, ha entitlement ok -> /plan.
+      if (!res.ok) {
+        const errMsg = String(json?.error ?? 'Error')
+
+        if (res.status === 403 && /already used/i.test(errMsg)) {
+          const ok = await waitForEntitlement(4)
+          if (ok) {
+            router.replace('/plan')
+            return
+          }
+          setMsg('A free trial már egyszer fel lett használva ezen a fiókon. Ha mégis van aktív hozzáférésed, frissítsd az oldalt.')
+          return
+        }
+
+        throw new Error(errMsg)
+      }
+
+      // ✅ várjuk meg, míg tényleg látszik is entitlementben
       const ok = await waitForEntitlement()
       if (!ok) {
         throw new Error('Free trial activated, but entitlement did not refresh yet. Please refresh the page.')
@@ -102,7 +140,7 @@ function Inner() {
       </p>
 
       <div className="mt-10 grid gap-6 md:grid-cols-2">
-        {/* PRO FIRST */}
+        {/* PRO */}
         <Card className="relative overflow-hidden">
           <div className="flex items-center gap-2 text-white/90">
             <Zap size={18} />
@@ -127,7 +165,7 @@ function Inner() {
         </Card>
 
         {/* FREE */}
-        <Card className="opacity-[0.85]">
+        <Card className="opacity-[0.92]">
           <div className="flex items-center gap-2 text-white/80">
             <ShieldCheck size={18} />
             <div className="font-semibold">Free trial</div>
@@ -152,6 +190,8 @@ function Inner() {
           <p className="mt-3 text-xs text-white/55">
             After 48 hours the free trial expires permanently for this account, and you will need Pro to continue.
           </p>
+
+          {msg && <p className="mt-3 text-sm text-red-400">{msg}</p>}
         </Card>
       </div>
     </div>

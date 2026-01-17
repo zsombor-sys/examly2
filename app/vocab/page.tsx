@@ -7,7 +7,7 @@ import { FileUp, Loader2, RotateCcw, ArrowLeftRight } from 'lucide-react'
 import AuthGate from '@/components/AuthGate'
 import { authedFetch } from '@/lib/authClient'
 import { supabase } from '@/lib/supabaseClient'
-import HScroll from '@/components/HScroll' // ✅ FIX: gombsor ne lógjon ki
+import HScroll from '@/components/HScroll'
 
 type Item = { term: string; translation: string; example?: string }
 type Payload = { title: string; language: string; items: Item[] }
@@ -30,7 +30,13 @@ type SavedSet = {
   data: Payload
 }
 
-const HISTORY_KEY = 'examly:vocabsets:v1'
+// ⚠️ Régi kulcs (anon / legacy)
+const HISTORY_KEY_LEGACY = 'examly:vocabsets:v1'
+
+function historyKeyForUser(userId: string | null) {
+  // user-specifikus history, hogy ne keveredjen accountok között
+  return userId ? `examly:vocabsets:v1:${userId}` : HISTORY_KEY_LEGACY
+}
 
 function nowId() {
   return Math.random().toString(16).slice(2) + '-' + Date.now().toString(16)
@@ -79,6 +85,9 @@ function VocabPageInner() {
   const [history, setHistory] = useState<SavedSet[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
 
+  // ✅ userId state a user-specifikus localStorage-hoz + supabase filterhez
+  const [userId, setUserId] = useState<string | null>(null)
+
   // Learn mode state (quiz)
   const [learnStarted, setLearnStarted] = useState(false)
   const [learnMode, setLearnMode] = useState<'type' | 'mcq'>('type')
@@ -97,20 +106,74 @@ function VocabPageInner() {
 
   const totalCards = data?.items?.length ?? 0
 
+  function resetLearnState() {
+    setLearnStarted(false)
+    setFinished(false)
+    setQueue([])
+    setCurrent(null)
+    setReveal(false)
+    setAnswer('')
+    setCorrectCount(0)
+    setWrongCount(0)
+    setWrongTerms({})
+    setStreak(0)
+    setSessionStart(null)
+  }
+
+  function applyLoadedSet(s: SavedSet) {
+    setActiveId(s.id)
+    setData(s.data)
+    setSourceLang(s.sourceLang)
+    setTargetLang(s.targetLang)
+    setSwappedView(!!s.swappedView)
+    setTab('cards')
+    resetLearnState()
+  }
+
+  function saveHistory(next: SavedSet[]) {
+    setHistory(next)
+    try {
+      localStorage.setItem(historyKeyForUser(userId), JSON.stringify(next.slice(0, 40)))
+    } catch {}
+  }
+
+  function loadSaved(id: string) {
+    const found = history.find((h) => h.id === id)
+    if (!found) return
+    applyLoadedSet(found)
+  }
+
+  function clearAll() {
+    setHistory([])
+    setActiveId(null)
+    setData(null)
+    setError(null)
+    resetLearnState()
+    try {
+      localStorage.removeItem(historyKeyForUser(userId))
+    } catch {}
+  }
+
+  // ✅ 1) user betöltés + history load: supabase user filter + localStorage user-key
   useEffect(() => {
     ;(async () => {
       try {
+        // user
         const userRes = await supabase?.auth.getUser()
-        const user = userRes?.data?.user
+        const u = userRes?.data?.user ?? null
+        const uid = u?.id ?? null
+        setUserId(uid)
 
-        if (supabase && user) {
-          const { data: rows, error } = await supabase
+        // 1) próbáljuk supabase history-t (DE: user_id filter!)
+        if (supabase && uid) {
+          const { data: rows, error: sbErr } = await supabase
             .from('vocab_sets')
             .select('id, created_at, from_lang, to_lang, cards')
+            .eq('user_id', uid) // ✅ CRITICAL FIX: ne láss más user setjeit
             .order('created_at', { ascending: false })
             .limit(40)
 
-          if (!error && Array.isArray(rows)) {
+          if (!sbErr && Array.isArray(rows)) {
             const mapped: SavedSet[] = rows.map((r: any) => ({
               id: r.id,
               createdAt: new Date(r.created_at).getTime(),
@@ -131,74 +194,40 @@ function VocabPageInner() {
             }))
 
             setHistory(mapped)
-            if (mapped[0]?.id) {
-              setActiveId(mapped[0].id)
-              setData(mapped[0].data)
-              setSourceLang(mapped[0].sourceLang)
-              setTargetLang(mapped[0].targetLang)
-              setSwappedView(!!mapped[0].swappedView)
-            }
+            if (mapped[0]) applyLoadedSet(mapped[0])
             return
           }
         }
 
-        const rawLs = localStorage.getItem(HISTORY_KEY)
+        // 2) localStorage: user-specifikus kulcs
+        const key = historyKeyForUser(uid)
+
+        // ✅ migráció: ha van legacy és még nincs user-key, akkor átmásoljuk (csak helyi UX-ért)
+        if (uid) {
+          try {
+            const legacy = localStorage.getItem(HISTORY_KEY_LEGACY)
+            const scoped = localStorage.getItem(key)
+            if (!scoped && legacy) {
+              localStorage.setItem(key, legacy)
+              // opcionális: legacy törlés, hogy ne keveredjen
+              localStorage.removeItem(HISTORY_KEY_LEGACY)
+            }
+          } catch {}
+        }
+
+        const rawLs = localStorage.getItem(key)
         if (!rawLs) return
         const parsed = JSON.parse(rawLs)
         if (Array.isArray(parsed)) {
           setHistory(parsed)
-          if (parsed[0]?.id) {
-            setActiveId(parsed[0].id)
-            setData(parsed[0].data)
-            setSourceLang(parsed[0].sourceLang)
-            setTargetLang(parsed[0].targetLang)
-            setSwappedView(!!parsed[0].swappedView)
-          }
+          if (parsed[0]?.id) applyLoadedSet(parsed[0])
         }
       } catch {
         // ignore
       }
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  function saveHistory(next: SavedSet[]) {
-    setHistory(next)
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(next.slice(0, 40)))
-    } catch {}
-  }
-
-  function loadSaved(id: string) {
-    const found = history.find((h) => h.id === id)
-    if (!found) return
-    setActiveId(found.id)
-    setData(found.data)
-    setSourceLang(found.sourceLang)
-    setTargetLang(found.targetLang)
-    setSwappedView(!!found.swappedView)
-    setTab('cards')
-
-    // reset learn view when switching sets
-    setLearnStarted(false)
-    setFinished(false)
-    setQueue([])
-    setCurrent(null)
-    setReveal(false)
-    setAnswer('')
-    setCorrectCount(0)
-    setWrongCount(0)
-    setWrongTerms({})
-    setStreak(0)
-    setSessionStart(null)
-  }
-
-  function clearAll() {
-    setHistory([])
-    setActiveId(null)
-    try {
-      localStorage.removeItem(HISTORY_KEY)
-    } catch {}
-  }
 
   const words = useMemo(() => parseWords(raw), [raw])
 
@@ -230,8 +259,11 @@ function VocabPageInner() {
       }
 
       if (!res.ok) {
+        // ✅ pontosabb hibák
         if (res.status === 401) throw new Error('Session expired. Please log in again.')
         if (res.status === 402) throw new Error('No credits left. Please buy Pro to continue.')
+        if (res.status === 403) throw new Error(json?.error ?? 'Free plan already used.')
+        if (res.status === 409) throw new Error('Please try again (conflict). Retry in 2 seconds.')
         const msg = json?.error ?? `Request failed (${res.status})`
         throw new Error(msg)
       }
@@ -250,13 +282,13 @@ function VocabPageInner() {
             translation: it.translation,
             example: it.example,
           }))
-          const { data: row, error } = await supabase
+          const { data: row, error: sbErr } = await supabase
             .from('vocab_sets')
             .insert({ user_id: user.id, from_lang: sourceLang, to_lang: targetLang, cards })
             .select('id, created_at')
             .single()
 
-          if (!error && row?.id) {
+          if (!sbErr && row?.id) {
             persistedId = row.id
             persistedCreatedAt = row.created_at ? new Date(row.created_at).getTime() : Date.now()
           }
@@ -279,18 +311,7 @@ function VocabPageInner() {
       saveHistory(next)
       setTab('cards')
 
-      // reset learn state
-      setLearnStarted(false)
-      setFinished(false)
-      setQueue([])
-      setCurrent(null)
-      setReveal(false)
-      setAnswer('')
-      setCorrectCount(0)
-      setWrongCount(0)
-      setWrongTerms({})
-      setStreak(0)
-      setSessionStart(null)
+      resetLearnState()
     } catch (e: any) {
       setError(e?.message ?? 'Error')
     } finally {
@@ -303,19 +324,7 @@ function VocabPageInner() {
     setFiles([])
     setData(null)
     setError(null)
-
-    // reset learn
-    setLearnStarted(false)
-    setFinished(false)
-    setQueue([])
-    setCurrent(null)
-    setReveal(false)
-    setAnswer('')
-    setCorrectCount(0)
-    setWrongCount(0)
-    setWrongTerms({})
-    setStreak(0)
-    setSessionStart(null)
+    resetLearnState()
   }
 
   function normalizeGuess(s: string) {
@@ -460,10 +469,7 @@ function VocabPageInner() {
   }
 
   const currentCard = current != null && data?.items?.[current] ? data.items[current] : null
-  const allTranslations = useMemo(
-    () => (data?.items ?? []).map((x) => x.translation).filter(Boolean),
-    [data]
-  )
+  const allTranslations = useMemo(() => (data?.items ?? []).map((x) => x.translation).filter(Boolean), [data])
 
   const mcqChoices = useMemo(() => {
     if (!currentCard) return []
@@ -473,40 +479,25 @@ function VocabPageInner() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12">
-      {/* ✅ FIX: min-w-0 + gombsor HScroll-ban, hogy ne lógjon ki */}
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between min-w-0">
         <div className="min-w-0">
           <h1 className="text-3xl font-semibold tracking-tight">Vocab</h1>
           <p className="mt-2 text-white/70 max-w-[70ch]">
-            Paste a word list or upload a photo of your vocab sheet. Examly turns it into flashcards you can actually
-            use (any language pair).
+            Paste a word list or upload a photo of your vocab sheet. Examly turns it into flashcards you can actually use (any
+            language pair).
           </p>
           <p className="mt-1 text-xs text-white/50">Free: 1 set / 48h. Pro: unlimited.</p>
         </div>
 
         <div className="min-w-0 overflow-hidden md:shrink-0">
           <HScroll className="max-w-full md:max-w-[560px] -mx-1 px-1 justify-end">
-            <Button
-              className="shrink-0"
-              variant={tab === 'cards' ? 'primary' : 'ghost'}
-              onClick={() => setTab('cards')}
-            >
+            <Button className="shrink-0" variant={tab === 'cards' ? 'primary' : 'ghost'} onClick={() => setTab('cards')}>
               Cards
             </Button>
-
-            <Button
-              className="shrink-0"
-              variant={tab === 'history' ? 'primary' : 'ghost'}
-              onClick={() => setTab('history')}
-            >
+            <Button className="shrink-0" variant={tab === 'history' ? 'primary' : 'ghost'} onClick={() => setTab('history')}>
               History
             </Button>
-
-            <Button
-              className="shrink-0"
-              variant={tab === 'learn' ? 'primary' : 'ghost'}
-              onClick={() => setTab('learn')}
-            >
+            <Button className="shrink-0" variant={tab === 'learn' ? 'primary' : 'ghost'} onClick={() => setTab('learn')}>
               Learn
             </Button>
 
@@ -641,7 +632,9 @@ function VocabPageInner() {
               </div>
 
               {!data?.items?.length ? (
-                <p className="mt-3 text-sm text-white/60">Generate a set first, then come back here to learn it quiz-style.</p>
+                <p className="mt-3 text-sm text-white/60">
+                  Generate a set first, then come back here to learn it quiz-style.
+                </p>
               ) : finished ? (
                 <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.02] p-4">
                   <div className="text-sm font-semibold text-white/90">Finished 🎉</div>
@@ -650,7 +643,9 @@ function VocabPageInner() {
                   </div>
                   <div className="mt-3 flex gap-2">
                     <Button onClick={startLearnSession}>Start again</Button>
-                    <Button variant="ghost" onClick={() => setTab('cards')}>Back to cards</Button>
+                    <Button variant="ghost" onClick={() => setTab('cards')}>
+                      Back to cards
+                    </Button>
                   </div>
                 </div>
               ) : !learnStarted ? (
@@ -658,7 +653,9 @@ function VocabPageInner() {
                   <div className="text-sm text-white/80">
                     You have <b>{totalCards}</b> cards in this set. Start a quick quiz session.
                   </div>
-                  <Button className="mt-3" onClick={startLearnSession}>Start learning</Button>
+                  <Button className="mt-3" onClick={startLearnSession}>
+                    Start learning
+                  </Button>
                 </div>
               ) : (
                 <div className="mt-4 space-y-4">
@@ -666,13 +663,9 @@ function VocabPageInner() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-xs text-white/55">Term</div>
-                        <div className="mt-1 text-lg font-semibold text-white break-words">
-                          {currentCard?.term ?? ''}
-                        </div>
+                        <div className="mt-1 text-lg font-semibold text-white break-words">{currentCard?.term ?? ''}</div>
                         {currentCard?.example ? (
-                          <div className="mt-2 text-xs text-white/55 break-words">
-                            Example: {currentCard.example}
-                          </div>
+                          <div className="mt-2 text-xs text-white/55 break-words">Example: {currentCard.example}</div>
                         ) : null}
                       </div>
 
@@ -719,9 +712,7 @@ function VocabPageInner() {
                       {reveal ? (
                         <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
                           <div className="text-xs text-white/55">Answer</div>
-                          <div className="mt-1 text-sm text-white/85 break-words">
-                            {currentCard?.translation ?? ''}
-                          </div>
+                          <div className="mt-1 text-sm text-white/85 break-words">{currentCard?.translation ?? ''}</div>
                         </div>
                       ) : null}
                     </div>
@@ -731,12 +722,7 @@ function VocabPageInner() {
 
                       <div className="mt-3 grid gap-2">
                         {mcqChoices.map((c, i) => (
-                          <Button
-                            key={i}
-                            variant="ghost"
-                            className="justify-start"
-                            onClick={() => checkChoice(c)}
-                          >
+                          <Button key={i} variant="ghost" className="justify-start" onClick={() => checkChoice(c)}>
                             {c}
                           </Button>
                         ))}
@@ -745,9 +731,7 @@ function VocabPageInner() {
                       {reveal ? (
                         <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
                           <div className="text-xs text-white/55">Correct answer</div>
-                          <div className="mt-1 text-sm text-white/85 break-words">
-                            {currentCard?.translation ?? ''}
-                          </div>
+                          <div className="mt-1 text-sm text-white/85 break-words">{currentCard?.translation ?? ''}</div>
                           <Button className="mt-3" onClick={continueAfterReveal}>
                             Continue
                           </Button>
@@ -758,12 +742,9 @@ function VocabPageInner() {
 
                   <div className="flex items-center justify-between text-xs text-white/55">
                     <div>
-                      Correct: <b className="text-white/80">{correctCount}</b> • Wrong:{' '}
-                      <b className="text-white/80">{wrongCount}</b>
+                      Correct: <b className="text-white/80">{correctCount}</b> • Wrong: <b className="text-white/80">{wrongCount}</b>
                     </div>
-                    <div className="text-white/40">
-                      {Object.keys(wrongTerms).length ? `Wrong terms: ${Object.keys(wrongTerms).length}` : ''}
-                    </div>
+                    <div className="text-white/40">{Object.keys(wrongTerms).length ? `Wrong terms: ${Object.keys(wrongTerms).length}` : ''}</div>
                   </div>
                 </div>
               )}

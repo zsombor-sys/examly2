@@ -259,14 +259,15 @@ function VocabPageInner() {
       }
 
       if (!res.ok) {
-        // ✅ pontosabb hibák
-        if (res.status === 401) throw new Error('Session expired. Please log in again.')
-        if (res.status === 402) throw new Error('No credits left. Please buy Pro to continue.')
-        if (res.status === 403) throw new Error(json?.error ?? 'Free plan already used.')
-        if (res.status === 409) throw new Error('Please try again (conflict). Retry in 2 seconds.')
-        const msg = json?.error ?? `Request failed (${res.status})`
-        throw new Error(msg)
-      }
+  if (res.status === 401) throw new Error('Session expired. Please log in again.')
+  if (res.status === 402) throw new Error('No credits left. Please buy Pro to continue.')
+
+  const msg = json?.error ?? `Request failed (${res.status})`
+  const code = json?.code ? ` [${json.code}]` : ''
+  const type = json?.type ? ` (${json.type})` : ''
+  throw new Error(`Vocab API error ${res.status}${code}${type}: ${msg}`)
+}
+
 
       setData(json)
 

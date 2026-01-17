@@ -9,12 +9,10 @@ function safeParseJson(text: string) {
   const raw = String(text ?? '')
   if (!raw.trim()) throw new Error('Model returned empty response (no JSON).')
 
-  // try direct
   try {
     return JSON.parse(raw)
   } catch {}
 
-  // try extract first {...}
   const m = raw.match(/\{[\s\S]*\}/)
   if (m) {
     try {
@@ -22,7 +20,6 @@ function safeParseJson(text: string) {
     } catch {}
   }
 
-  // repair backslashes (common failure)
   const repaired = raw.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
   const m2 = repaired.match(/\{[\s\S]*\}/)
   if (m2) return JSON.parse(m2[0])
@@ -58,11 +55,43 @@ function langLabel(code: string) {
   return map[code] ?? code
 }
 
+function pickErrorInfo(e: any) {
+  // OpenAI SDK errors can be nested differently depending on version
+  const status =
+    Number(e?.status) ||
+    Number(e?.response?.status) ||
+    Number(e?.error?.status) ||
+    Number(e?.cause?.status) ||
+    500
+
+  const code =
+    e?.code ||
+    e?.error?.code ||
+    e?.cause?.code ||
+    e?.response?.data?.error?.code ||
+    null
+
+  const message =
+    e?.message ||
+    e?.error?.message ||
+    e?.response?.data?.error?.message ||
+    e?.cause?.message ||
+    'Server error'
+
+  const type =
+    e?.type ||
+    e?.error?.type ||
+    e?.response?.data?.error?.type ||
+    null
+
+  return { status, code, type, message }
+}
+
 export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
 
-    // ✅ credits/free consumption first (so abuse can’t bypass)
+    // credits/free consumption (important)
     await consumeGeneration(user.id)
 
     const form = await req.formData()
@@ -73,7 +102,6 @@ export async function POST(req: Request) {
 
     const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) {
-      // mock
       const lines = words.split(/\n/).filter(Boolean).slice(0, 20)
       return NextResponse.json({
         title: 'Vocab set (mock)',
@@ -87,7 +115,6 @@ export async function POST(req: Request) {
     }
 
     const openai = new OpenAI({ apiKey })
-    // ✅ same safe default as your Plan route
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
     const src = langLabel(sourceLang)
@@ -105,7 +132,6 @@ Return ONLY a JSON object with this exact shape:
 
 Rules:
 - Translate FROM sourceLang TO targetLang.
-- Supported languages: English, Hungarian, German, Spanish, Italian, Latin.
 - If the user provides "term - translation" pairs, preserve them when they match the chosen direction.
 - If images are provided, extract words/pairs you see first (keep order, fix obvious typos).
 - Do not invent words not present unless image is unreadable (then note "(unclear in photo)" in example).
@@ -120,7 +146,6 @@ Rules:
 
     const userContent: any[] = [{ type: 'text', text: userText }]
 
-    // ✅ chat.completions image format (same style as your Plan route)
     for (const f of files.slice(0, 6)) {
       const ab = await f.arrayBuffer()
       const b64 = Buffer.from(ab).toString('base64')
@@ -145,18 +170,23 @@ Rules:
     const parsed = safeParseJson(txt)
     const normalized = normalize(parsed)
 
-    // safety cap
     normalized.items = normalized.items.slice(0, 300)
+    if (!normalized.language) normalized.language = `${src} → ${tgt}`
 
-    // if model forgot to set language nicely
-    if (!normalized.language || typeof normalized.language !== 'string') {
-      normalized.language = `${src} → ${tgt}`
-    }
-
-    return NextResponse.json(normalized)
+    return NextResponse.json(normalized, {
+      headers: { 'x-examly-vocab': 'ok' },
+    })
   } catch (e: any) {
-    // ✅ preserve real status codes (402 matters on client)
-    const status = Number(e?.status ?? e?.response?.status ?? 400)
-    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status })
+    const info = pickErrorInfo(e)
+    return NextResponse.json(
+      {
+        error: info.message,
+        code: info.code,
+        type: info.type,
+        status: info.status,
+        where: 'api/vocab',
+      },
+      { status: info.status || 500 }
+    )
   }
 }

@@ -6,13 +6,15 @@ import OpenAI from 'openai'
 export const runtime = 'nodejs'
 
 function safeParseJson(text: string) {
-  const raw = String(text ?? '')
-  if (!raw.trim()) throw new Error('Model returned empty response (no JSON).')
+  const raw = String(text ?? '').trim()
+  if (!raw) throw new Error('Model returned empty response (no JSON).')
 
+  // direct
   try {
     return JSON.parse(raw)
   } catch {}
 
+  // extract first {...}
   const m = raw.match(/\{[\s\S]*\}/)
   if (m) {
     try {
@@ -20,6 +22,7 @@ function safeParseJson(text: string) {
     } catch {}
   }
 
+  // repair stray backslashes
   const repaired = raw.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
   const m2 = repaired.match(/\{[\s\S]*\}/)
   if (m2) return JSON.parse(m2[0])
@@ -56,34 +59,10 @@ function langLabel(code: string) {
 }
 
 function pickErrorInfo(e: any) {
-  // OpenAI SDK errors can be nested differently depending on version
-  const status =
-    Number(e?.status) ||
-    Number(e?.response?.status) ||
-    Number(e?.error?.status) ||
-    Number(e?.cause?.status) ||
-    500
-
-  const code =
-    e?.code ||
-    e?.error?.code ||
-    e?.cause?.code ||
-    e?.response?.data?.error?.code ||
-    null
-
-  const message =
-    e?.message ||
-    e?.error?.message ||
-    e?.response?.data?.error?.message ||
-    e?.cause?.message ||
-    'Server error'
-
-  const type =
-    e?.type ||
-    e?.error?.type ||
-    e?.response?.data?.error?.type ||
-    null
-
+  const status = Number(e?.status) || Number(e?.response?.status) || 500
+  const code = e?.code || e?.error?.code || null
+  const message = e?.message || e?.error?.message || 'Server error'
+  const type = e?.type || e?.error?.type || null
   return { status, code, type, message }
 }
 
@@ -91,7 +70,7 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
 
-    // credits/free consumption (important)
+    // ✅ credit/free consumption first
     await consumeGeneration(user.id)
 
     const form = await req.formData()
@@ -115,7 +94,7 @@ export async function POST(req: Request) {
     }
 
     const openai = new OpenAI({ apiKey })
-    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini' // ✅ stable default
 
     const src = langLabel(sourceLang)
     const tgt = langLabel(targetLang)
@@ -138,11 +117,9 @@ Rules:
 - Provide a short example sentence for ~30-60% of items (optional).
 `.trim()
 
-    const userText =
-      (words
-        ? `Direction: ${src} → ${tgt}\n\nInput words/pairs (may contain separators like "-" or ":"):\n${words}\n\nCreate flashcards translated ${src} → ${tgt}. If a line already includes a correct translation in this direction, keep it.`
-        : `Direction: ${src} → ${tgt}\n\nNo typed words provided. Extract a vocabulary list from the image(s) and create flashcards translated ${src} → ${tgt}.`) +
-      `\n\nsourceLang=${sourceLang}, targetLang=${targetLang}`
+    const userText = words
+      ? `Direction: ${src} → ${tgt}\n\nInput words/pairs:\n${words}\n\nCreate flashcards translated ${src} → ${tgt}. If a line already includes a correct translation in this direction, keep it.`
+      : `Direction: ${src} → ${tgt}\n\nNo typed words provided. Extract a vocabulary list from the image(s) and create flashcards translated ${src} → ${tgt}.`
 
     const userContent: any[] = [{ type: 'text', text: userText }]
 
@@ -170,23 +147,14 @@ Rules:
     const parsed = safeParseJson(txt)
     const normalized = normalize(parsed)
 
-    normalized.items = normalized.items.slice(0, 300)
     if (!normalized.language) normalized.language = `${src} → ${tgt}`
 
-    return NextResponse.json(normalized, {
-      headers: { 'x-examly-vocab': 'ok' },
-    })
+    return NextResponse.json(normalized, { headers: { 'x-examly-vocab': 'ok' } })
   } catch (e: any) {
     const info = pickErrorInfo(e)
     return NextResponse.json(
-      {
-        error: info.message,
-        code: info.code,
-        type: info.type,
-        status: info.status,
-        where: 'api/vocab',
-      },
-      { status: info.status || 500 }
+      { error: info.message, code: info.code, type: info.type, status: info.status, where: 'api/vocab' },
+      { status: info.status }
     )
   }
 }

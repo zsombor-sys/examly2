@@ -45,8 +45,8 @@ function stripeClient() {
 }
 
 /**
- * FIX: profiles.id NOT NULL -> insertnél kötelező.
- * Biztonság: ha valahol nem user_id alapján van a rekord, fallbackolunk id-ra is.
+ * profiles.id NOT NULL -> insertnél kötelező.
+ * Biztonság: ha valahol nem user_id alapján van a rekord, fallback id-ra is.
  */
 export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
   const sb = supabaseAdmin()
@@ -59,7 +59,7 @@ export async function getOrCreateProfile(userId: string): Promise<ProfileRow> {
 
   if (selErr1) throw selErr1
   if (byUserId) {
-    // best-effort: ha NULL mezők vannak, javítsuk ki
+    // best-effort: NULL mezők javítása
     if ((byUserId as any).credits == null || (byUserId as any).free_used == null) {
       const patch: any = { updated_at: nowIso() }
       if ((byUserId as any).credits == null) patch.credits = 0
@@ -174,8 +174,6 @@ export async function maybeAutoRecharge(userId: string) {
     const shouldCredit = await markStripeEventOnce(pi.id, 'auto_recharge_payment_intent')
     if (shouldCredit) {
       const next = Number(p.credits ?? 0) + PRO_CREDITS_PER_PURCHASE
-
-      // update user_id, ha nincs, akkor id
       await sb.from('profiles').update({ credits: next, updated_at: nowIso() }).eq('user_id', userId)
       await sb.from('profiles').update({ credits: next, updated_at: nowIso() }).eq('id', userId)
     }
@@ -189,13 +187,13 @@ export async function maybeAutoRecharge(userId: string) {
 async function updateProfileByUserOrId(userId: string, patch: Record<string, any>): Promise<ProfileRow | null> {
   const sb = supabaseAdmin()
 
-  // 1) user_id
+  // user_id
   {
     const { data, error } = await sb.from('profiles').update(patch).eq('user_id', userId).select('*').maybeSingle()
     if (!error && data) return data as any
   }
 
-  // 2) id
+  // id
   {
     const { data, error } = await sb.from('profiles').update(patch).eq('id', userId).select('*').maybeSingle()
     if (!error && data) return data as any
@@ -205,26 +203,10 @@ async function updateProfileByUserOrId(userId: string, patch: Record<string, any
 }
 
 /**
- * Consume 1 generation. (STABLE FIX)
- * - Nem használunk "optimistic eq compare"-t, mert az nálad 0 sor update-et okoz => "Please try again".
- * - Admin környezetben egyszerűen frissítünk user_id vagy id alapján.
+ * ✅ STABLE consume: nincs optimistic compare, nincs RPC.
+ * Ez NEM dob 409-et "Please try again"-ből.
  */
 export async function consumeGeneration(userId: string) {
-  const sb = supabaseAdmin()
-
-  // Fast path: try RPC if present.
-  const { data: rpcData, error: rpcErr } = await sb.rpc('consume_generation', { p_user_id: userId }).maybeSingle()
-  if (!rpcErr && rpcData) return rpcData as any
-
-  if (rpcErr && String(rpcErr.message || '').includes('NO_CREDITS')) {
-    const r = await maybeAutoRecharge(userId)
-    if (r.succeeded) {
-      const { data: again, error: againErr } = await sb.rpc('consume_generation', { p_user_id: userId }).maybeSingle()
-      if (!againErr && again) return again as any
-    }
-  }
-
-  // Fallback: stable update
   const p = await getOrCreateProfile(userId)
   const ent = entitlementSnapshot(p)
 
@@ -237,44 +219,33 @@ export async function consumeGeneration(userId: string) {
         const updated = await updateProfileByUserOrId(userId, { credits: ent2.credits - 1, updated_at: nowIso() })
         if (updated) return { mode: 'pro', profile: updated }
       }
-      // ha még mindig nincs, akkor rendes NO_CREDITS
     }
 
     const err: any = new Error('No credits left')
     err.status = 402
     err.code = 'NO_CREDITS'
-    err.autoRechargeAttempted = recharge.attempted
-    err.autoRechargeSucceeded = recharge.succeeded
-    err.autoRechargeError = (recharge as any).error
     throw err
   }
 
+  // Pro credits
   if (ent.credits > 0) {
     const updated = await updateProfileByUserOrId(userId, { credits: ent.credits - 1, updated_at: nowIso() })
     if (updated) return { mode: 'pro', profile: updated }
 
-    // ha valamiért nem találja: adjunk jobb hibát
     const err: any = new Error('Profile update failed (credits)')
     err.status = 500
     err.code = 'PROFILE_UPDATE_FAILED'
     throw err
   }
 
-  if (ent.freeRemaining > 0) {
-    const cur = Number(p.free_used ?? 0)
-    const updated = await updateProfileByUserOrId(userId, { free_used: cur + 1, updated_at: nowIso() })
-    if (updated) return { mode: 'free', profile: updated }
+  // Free
+  const cur = Number(p.free_used ?? 0)
+  const updated = await updateProfileByUserOrId(userId, { free_used: cur + 1, updated_at: nowIso() })
+  if (updated) return { mode: 'free', profile: updated }
 
-    const err: any = new Error('Profile update failed (free_used)')
-    err.status = 500
-    err.code = 'PROFILE_UPDATE_FAILED'
-    throw err
-  }
-
-  // ide elvileg nem jutunk
-  const err: any = new Error('No credits left')
-  err.status = 402
-  err.code = 'NO_CREDITS'
+  const err: any = new Error('Profile update failed (free_used)')
+  err.status = 500
+  err.code = 'PROFILE_UPDATE_FAILED'
   throw err
 }
 
@@ -285,10 +256,8 @@ export async function activateFree(userId: string, fullName: string, phone: stri
   const sb = supabaseAdmin()
   const p = await getOrCreateProfile(userId)
 
-  // ha még aktív a free, akkor OK és visszaadjuk
   if (p.free_expires_at && new Date(p.free_expires_at).getTime() > Date.now()) return p
 
-  // ha már egyszer használt (free_window_start megvan), és már lejárt -> tiltás
   if (p.free_window_start) {
     const err: any = new Error('Free plan already used')
     err.status = 403

@@ -16,15 +16,18 @@ export default function LoginPage() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
+
     if (!supabase) {
       setError('Auth is not configured (missing Supabase env vars).')
       return
     }
+
     setLoading(true)
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     setLoading(false)
+
     if (error) setError(error.message)
-    else router.push('/plan')
+    else router.replace('/plan')
   }
 
   return (
@@ -37,11 +40,16 @@ export default function LoginPage() {
           <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" />
           <Input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" />
           {error && <p className="text-sm text-red-400">{error}</p>}
-          <Button disabled={loading} className="w-full">{loading ? 'Signing in…' : 'Sign in'}</Button>
+          <Button disabled={loading} className="w-full">
+            {loading ? 'Signing in…' : 'Sign in'}
+          </Button>
         </form>
 
         <p className="mt-6 text-sm text-dim">
-          No account? <Link className="text-white underline underline-offset-4" href="/signup">Sign up</Link>
+          No account?{' '}
+          <Link className="text-white underline underline-offset-4" href="/signup">
+            Sign up
+          </Link>
         </p>
       </Card>
     </div>

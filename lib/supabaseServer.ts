@@ -10,6 +10,7 @@ export function supabaseAdmin() {
   if (!url || !serviceKey) {
     throw new Error('Supabase server env missing (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)')
   }
+
   return createClient(url, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   })

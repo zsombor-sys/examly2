@@ -6,12 +6,13 @@ import { supabase } from '@/lib/supabaseClient'
 import { authedFetch } from '@/lib/authClient'
 
 type Me = {
-  entitlement: {
+  entitlement?: {
     ok: boolean
     credits: number
     freeActive: boolean
     freeRemaining: number
     freeExpiresAt: string | null
+    freeWindowStart?: string | null
   }
 }
 
@@ -32,7 +33,10 @@ export default function AuthGate({
 
     async function run() {
       setError(null)
+
       if (!supabase) {
+        // auth not configured -> let app render
+        if (!alive) return
         setReady(true)
         return
       }
@@ -47,15 +51,26 @@ export default function AuthGate({
 
       if (requireEntitlement) {
         try {
-          const res = await authedFetch('/api/me')
-          const json = (await res.json()) as Me
-          if (!res.ok) throw new Error((json as any)?.error || 'Error')
+          const res = await authedFetch('/api/me', {
+            method: 'GET',
+            cache: 'no-store',
+            headers: { 'Cache-Control': 'no-store' },
+          })
+
+          const json = (await res.json().catch(() => ({} as any))) as Me
+
+          if (!res.ok) throw new Error((json as any)?.error || `Error (${res.status})`)
+
           if (!json?.entitlement?.ok) {
-            router.replace('/choose-plan')
+            router.replace(`/choose-plan?next=${encodeURIComponent(pathname || '/plan')}`)
             return
           }
         } catch (e: any) {
+          if (!alive) return
           setError(e?.message ?? 'Error')
+          // ha me hívás hibázik, NE rendereljünk csendben félkészen
+          setReady(true)
+          return
         }
       }
 

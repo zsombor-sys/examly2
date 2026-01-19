@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import AuthGate from '@/components/AuthGate'
 import { supabase } from '@/lib/supabaseClient'
 import { authedFetch } from '@/lib/authClient'
@@ -18,6 +18,7 @@ type MeResponse = {
     freeRemaining: number
     freeExpiresAt?: string | null
     freeUsed?: number
+    freeWindowStart?: string | null
   }
 }
 
@@ -35,15 +36,24 @@ function sleep(ms: number) {
 
 function Inner() {
   const router = useRouter()
+  const sp = useSearchParams()
+  const nextUrl = useMemo(() => sp.get('next') || '/plan', [sp])
+
   const [email, setEmail] = useState('')
   const [fullName, setFullName] = useState('')
   const [phone, setPhone] = useState('')
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
+  const [freeLocked, setFreeLocked] = useState(false) // free already used + expired
+
   async function refreshMe(): Promise<MeResponse | null> {
     try {
-      const res = await authedFetch('/api/me', { method: 'GET' })
+      const res = await authedFetch('/api/me', {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-store' },
+      })
       if (!res.ok) return null
       return (await res.json()) as MeResponse
     } catch {
@@ -51,7 +61,6 @@ function Inner() {
     }
   }
 
-  // ✅ Ha már van entitlement (free aktív / van credit), ne itt ragadjunk -> /plan
   useEffect(() => {
     let alive = true
 
@@ -63,67 +72,75 @@ function Inner() {
         if (alive) setEmail(e)
       } catch {}
 
-      // entitlement check + redirect
       const me = await refreshMe()
       if (!alive) return
+
       if (me?.entitlement?.ok) {
-        router.replace('/plan')
+        router.replace(nextUrl)
         return
+      }
+
+      const freeWindowStart =
+        (me?.entitlement as any)?.freeWindowStart ?? (me?.profile as any)?.free_window_start ?? null
+      const freeActive = !!me?.entitlement?.freeActive
+
+      // If they already used free and it's not active anymore -> lock free
+      if (freeWindowStart && !freeActive) {
+        setFreeLocked(true)
+        setMsg('This account already used the free trial. Please choose Pro to continue.')
+      } else {
+        setFreeLocked(false)
+        setMsg(null)
       }
     })()
 
     return () => {
       alive = false
     }
-  }, [router])
+  }, [router, nextUrl])
 
-  async function waitForEntitlement(maxTries = 8): Promise<boolean> {
+  async function waitForEntitlement(maxTries = 10): Promise<boolean> {
     for (let i = 0; i < maxTries; i++) {
       const me = await refreshMe()
-      const ent = me?.entitlement
-      if (ent?.ok) return true
+      if (me?.entitlement?.ok) return true
       await sleep(250 + i * 250)
     }
     return false
   }
 
   async function activateFree() {
+    if (freeLocked) return
+
     setMsg(null)
     setLoading(true)
     try {
       const res = await authedFetch('/api/free/activate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
         body: JSON.stringify({ email, fullName, phone }),
       })
 
       const json = await res.json().catch(() => ({} as any))
 
-      // ✅ Ha már egyszer használtad: ne álljunk meg itt.
-      // Frissítünk /api/me-t, ha entitlement ok -> /plan.
       if (!res.ok) {
         const errMsg = String(json?.error ?? 'Error')
+        const code = String(json?.code ?? '')
 
-        if (res.status === 403 && /already used/i.test(errMsg)) {
-          const ok = await waitForEntitlement(4)
-          if (ok) {
-            router.replace('/plan')
-            return
-          }
-          setMsg('A free trial már egyszer fel lett használva ezen a fiókon. Ha mégis van aktív hozzáférésed, frissítsd az oldalt.')
+        // if already used -> lock UI (no infinite loop)
+        if (res.status === 403 && (code === 'FREE_ALREADY_USED' || /already used/i.test(errMsg))) {
+          setFreeLocked(true)
+          setMsg('This account already used the free trial. Please choose Pro to continue.')
           return
         }
 
         throw new Error(errMsg)
       }
 
-      // ✅ várjuk meg, míg tényleg látszik is entitlementben
       const ok = await waitForEntitlement()
-      if (!ok) {
-        throw new Error('Free trial activated, but entitlement did not refresh yet. Please refresh the page.')
-      }
+      if (!ok) throw new Error('Free trial activated, but entitlement did not refresh yet. Please refresh the page.')
 
-      router.replace('/plan')
+      router.replace(nextUrl)
     } catch (e: any) {
       setMsg(e?.message ?? 'Error')
     } finally {
@@ -136,7 +153,8 @@ function Inner() {
       <div className="text-xs uppercase tracking-[0.18em] text-white/55">One last step</div>
       <h1 className="mt-3 text-3xl md:text-4xl font-semibold tracking-tight">Choose your plan</h1>
       <p className="mt-3 text-white/70 max-w-[70ch]">
-        Examly works with credits. If you do not have credits and you have not used the free trial yet, pick one option below.
+        Examly works with credits. If you do not have credits and you have not used the free trial yet, pick one option
+        below.
       </p>
 
       <div className="mt-10 grid gap-6 md:grid-cols-2">
@@ -182,9 +200,11 @@ function Inner() {
             className="mt-6 w-full gap-2"
             variant="ghost"
             onClick={activateFree}
-            disabled={loading || fullName.trim().length < 2 || phone.trim().length < 6}
+            disabled={freeLocked || loading || fullName.trim().length < 2 || phone.trim().length < 6}
+            title={freeLocked ? 'Free trial already used on this account' : undefined}
           >
-            {loading ? 'Activating...' : 'Activate free trial'} <ArrowRight size={16} />
+            {freeLocked ? 'Free trial already used' : loading ? 'Activating...' : 'Activate free trial'}{' '}
+            <ArrowRight size={16} />
           </Button>
 
           <p className="mt-3 text-xs text-white/55">

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireUser } from '@/lib/authServer'
-import { consumeGeneration } from '@/lib/creditsServer'
+import { consumeGeneration, entitlementSnapshot, getOrCreateProfile } from '@/lib/creditsServer'
 import OpenAI from 'openai'
 import pdfParse from 'pdf-parse'
 import { getPlan, savePlan } from '@/app/api/plan/store'
@@ -178,14 +178,6 @@ MATH (KaTeX):
 - Prefer \\frac, \\sqrt, \\cdot
 - No $$
 
-STUDY_NOTES headings:
-# FOGALMAK / DEFINITIONS
-# KÉPLETEK / FORMULAS
-# LÉPÉSEK / METHOD
-# PÉLDA
-# GYAKORI HIBÁK / COMMON MISTAKES
-# GYORS ELLENŐRZŐLISTA / CHECKLIST
-
 DAILY_PLAN:
 - focus <= ~8 words
 - tasks <= ~12 words each
@@ -226,7 +218,6 @@ async function callModel(
   return resp.choices?.[0]?.message?.content ?? ''
 }
 
-// ✅ helper: set current plan best-effort (won't break if table missing)
 async function setCurrentPlanBestEffort(userId: string, planId: string) {
   try {
     const sb = supabaseAdmin()
@@ -242,14 +233,14 @@ export async function GET(req: Request) {
     const user = await requireUser(req)
     const { searchParams } = new URL(req.url)
     const id = searchParams.get('id')
-    if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
+    if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400, headers: { 'cache-control': 'no-store' } })
 
     const row = getPlan(user.id, id)
-    if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404, headers: { 'cache-control': 'no-store' } })
 
-    return NextResponse.json({ result: row.result })
+    return NextResponse.json({ result: row.result }, { headers: { 'cache-control': 'no-store' } })
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400 })
+    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400, headers: { 'cache-control': 'no-store' } })
   }
 }
 
@@ -257,7 +248,16 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
-    await consumeGeneration(user.id)
+
+    // ✅ PRECHECK: ne generáljunk ha nincs entitlement
+    const profile = await getOrCreateProfile(user.id)
+    const ent = entitlementSnapshot(profile as any)
+    if (!ent.ok) {
+      return NextResponse.json(
+        { error: 'No credits left', code: 'NO_CREDITS', status: 402, where: 'api/plan:precheck' },
+        { status: 402, headers: { 'cache-control': 'no-store' } }
+      )
+    }
 
     const form = await req.formData()
     const prompt = String(form.get('prompt') ?? '')
@@ -272,7 +272,11 @@ export async function POST(req: Request) {
       const plan = mock(prompt, fileNames)
       const saved = savePlan(user.id, plan.title, plan)
       await setCurrentPlanBestEffort(user.id, saved.id)
-      return NextResponse.json({ id: saved.id, result: plan })
+
+      // ✅ SUCCESS -> consume only now
+      await consumeGeneration(user.id)
+
+      return NextResponse.json({ id: saved.id, result: plan }, { headers: { 'cache-control': 'no-store', 'x-examly-plan': 'mock' } })
     }
 
     const client = new OpenAI({ apiKey: openAiKey })
@@ -302,9 +306,12 @@ export async function POST(req: Request) {
     const saved = savePlan(user.id, plan.title, plan)
     await setCurrentPlanBestEffort(user.id, saved.id)
 
-    return NextResponse.json({ id: saved.id, result: plan })
+    // ✅ SUCCESS -> consume only now
+    await consumeGeneration(user.id)
+
+    return NextResponse.json({ id: saved.id, result: plan }, { headers: { 'cache-control': 'no-store', 'x-examly-plan': 'ok' } })
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400 })
+    return NextResponse.json({ error: e?.message ?? 'Server error' }, { status: e?.status ?? 400, headers: { 'cache-control': 'no-store' } })
   }
 }
 
@@ -333,7 +340,7 @@ function mock(prompt: string, fileNames: string[]) {
     daily_plan: [
       {
         day: '1. nap',
-        focus: 'Képletek + alapfeladatok',
+        focus: 'Képletek + alap',
         minutes: 60,
         tasks: ['Képletek bemagolása', '6 könnyű feladat', 'Ellenőrzés'],
         blocks: [

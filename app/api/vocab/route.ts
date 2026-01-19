@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireUser } from '@/lib/authServer'
-import { consumeGeneration } from '@/lib/creditsServer'
+import { consumeGeneration, entitlementSnapshot, getOrCreateProfile } from '@/lib/creditsServer'
 import OpenAI from 'openai'
 
 export const runtime = 'nodejs'
@@ -9,12 +9,10 @@ function safeParseJson(text: string) {
   const raw = String(text ?? '').trim()
   if (!raw) throw new Error('Model returned empty response (no JSON).')
 
-  // direct
   try {
     return JSON.parse(raw)
   } catch {}
 
-  // extract first {...}
   const m = raw.match(/\{[\s\S]*\}/)
   if (m) {
     try {
@@ -22,7 +20,6 @@ function safeParseJson(text: string) {
     } catch {}
   }
 
-  // repair stray backslashes
   const repaired = raw.replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
   const m2 = repaired.match(/\{[\s\S]*\}/)
   if (m2) return JSON.parse(m2[0])
@@ -70,8 +67,15 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(req)
 
-    // ✅ credit/free consumption first
-    await consumeGeneration(user.id)
+    // ✅ PRECHECK: ne generáljunk ha tényleg nincs entitlement
+    const profile = await getOrCreateProfile(user.id)
+    const ent = entitlementSnapshot(profile as any)
+    if (!ent.ok) {
+      return NextResponse.json(
+        { error: 'No credits left', code: 'NO_CREDITS', status: 402, where: 'api/vocab:precheck' },
+        { status: 402, headers: { 'cache-control': 'no-store' } }
+      )
+    }
 
     const form = await req.formData()
     const words = String(form.get('words') ?? '').trim()
@@ -80,9 +84,11 @@ export async function POST(req: Request) {
     const targetLang = String(form.get('targetLang') ?? 'hu')
 
     const apiKey = process.env.OPENAI_API_KEY
+
+    // mock is “success” -> consume at the end too
     if (!apiKey) {
       const lines = words.split(/\n/).filter(Boolean).slice(0, 20)
-      return NextResponse.json({
+      const result = {
         title: 'Vocab set (mock)',
         language: `${sourceLang} → ${targetLang}`,
         items: lines.map((l, i) => ({
@@ -90,11 +96,16 @@ export async function POST(req: Request) {
           translation: 'fordítás',
           example: 'Example sentence.',
         })),
-      })
+      }
+
+      // ✅ ONLY NOW consume
+      await consumeGeneration(user.id)
+
+      return NextResponse.json(result, { headers: { 'cache-control': 'no-store', 'x-examly-vocab': 'mock' } })
     }
 
     const openai = new OpenAI({ apiKey })
-    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini' // ✅ stable default
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
     const src = langLabel(sourceLang)
     const tgt = langLabel(targetLang)
@@ -146,15 +157,19 @@ Rules:
     const txt = resp.choices?.[0]?.message?.content ?? ''
     const parsed = safeParseJson(txt)
     const normalized = normalize(parsed)
-
     if (!normalized.language) normalized.language = `${src} → ${tgt}`
 
-    return NextResponse.json(normalized, { headers: { 'x-examly-vocab': 'ok' } })
+    // ✅ SUCCESS -> ONLY NOW consume
+    await consumeGeneration(user.id)
+
+    return NextResponse.json(normalized, {
+      headers: { 'cache-control': 'no-store', 'x-examly-vocab': 'ok' },
+    })
   } catch (e: any) {
     const info = pickErrorInfo(e)
     return NextResponse.json(
       { error: info.message, code: info.code, type: info.type, status: info.status, where: 'api/vocab' },
-      { status: info.status }
+      { status: info.status, headers: { 'cache-control': 'no-store' } }
     )
   }
 }
